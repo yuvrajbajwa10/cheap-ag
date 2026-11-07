@@ -26,7 +26,9 @@
   ],
   "type": "module",
   "bin": {
-    "cheapag": "dist/index.js"
+    "cheapag": "dist/index.js",
+    "cheap-ag": "dist/index.js",
+    "cheap-agent": "dist/index.js"
   },
   "files": [
     "dist",
