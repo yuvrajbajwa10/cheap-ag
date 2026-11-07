@@ -363,8 +363,22 @@ function workspace(guarded: ("a" | "b")[], cwdRepo?: "a" | "b") {
     const out = call("guard", { tool_name, tool_input });
     return out ? (JSON.parse(out).hookSpecificOutput.permissionDecisionReason as string) : null;
   };
-  return { repos, cwd, guard, call };
+  const run = (tool_name: string, tool_input: Record<string, unknown>) => {
+    const input = { session_id: "s1", prompt_id: "p1", cwd, hook_event_name: "PreToolUse", tool_name, tool_input, tool_use_id: "t" };
+    const r = spawnSync(gitBash() ?? "sh", ["-c", command], { cwd, env, input: JSON.stringify(input), encoding: "utf8" });
+    expect(r.status).toBe(0);
+    if (!r.stdout.trim()) return null;
+    const out = JSON.parse(r.stdout).hookSpecificOutput;
+    expect(out).toMatchObject({ hookEventName: "PreToolUse", permissionDecision: "deny" });
+    return out.permissionDecisionReason as string;
+  };
+  return { repos, cwd, guard, run, call };
 }
+
+test("hooks.json: PreToolUse command runs guard in non-git cwd and guarded git repos", () => {
+  const raw = hooks.hooks.PreToolUse[0].hooks[0].command as string;
+  expect(raw).toBe(`r=$(git rev-parse --show-toplevel 2>/dev/null); { [ -z "$r" ] || [ -f "$r/.cheapag/hook.json" ] || [ -f "$r/.cheapag/hook/takeover" ]; } && npx -y cheap-agent@${version} hook guard; exit 0`);
+});
 
 test("guard: every Bash write target is checked against its own repo", () => {
   const { repos, guard } = workspace(["b"], "a"); // cwd is in the unguarded repo a
@@ -381,11 +395,11 @@ test("guard: a multi-file apply_patch is denied when any file is in a guarded re
 });
 
 test("guard: in a plain folder of repos, sed -i and code writes are denied if a sub-repo is guarded", () => {
-  const { guard } = workspace(["b"]);
-  expect(guard("Bash", { command: "sed -i 's/a/b/' b/src/x.ts" })).toMatch(/in-place edit/);
-  expect(guard("Bash", { command: "ls" })).toBeNull();
+  const { run } = workspace(["b"]);
+  expect(run("Bash", { command: "sed -i 's/a/b/' b/src/x.ts" })).toMatch(/in-place edit/);
+  expect(run("Bash", { command: "ls" })).toBeNull();
   const none = workspace([]);
-  expect(none.guard("Bash", { command: "sed -i 's/a/b/' b/src/x.ts" })).toBeNull();
+  expect(none.run("Bash", { command: "sed -i 's/a/b/' b/src/x.ts" })).toBeNull();
 });
 
 test("takeover: state is kept at the cwd when it is not a repo, not in the first sub-repo", () => {

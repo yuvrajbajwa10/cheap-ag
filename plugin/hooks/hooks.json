@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "r=$(git rev-parse --show-toplevel 2>/dev/null) && { [ -f \"$r/.cheapag/hook.json\" ] || [ -f \"$r/.cheapag/hook/takeover\" ]; } && npx -y cheap-agent@1.3.2 hook guard; exit 0",
+            "command": "r=$(git rev-parse --show-toplevel 2>/dev/null); { [ -z \"$r\" ] || [ -f \"$r/.cheapag/hook.json\" ] || [ -f \"$r/.cheapag/hook/takeover\" ]; } && npx -y cheap-agent@1.3.2 hook guard; exit 0",
             "timeout": 60
           }
         ]
