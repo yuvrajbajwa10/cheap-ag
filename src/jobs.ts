@@ -10,6 +10,7 @@ import { projectScripts, workerRuleset } from "./permissions.js";
 import { consentGate } from "./consent.js";
 import { chain, DIFFICULTIES, escalationSkip, modelName, recordSpend, runRouted, tierModel, usedBalance, type Difficulty, type Route } from "./routing.js";
 import { checkAllows, envFailure, errorTail, runVerify, sameFailure, verifyCommands, type VerifyRun } from "./verify.js";
+import { openAgySession } from "./antigravity.js";
 import { finishReport, openSession, releaseDirectory, type FinishReport, type Question, type RunResult, type Session } from "./worker.js";
 import {
   conflictPaths, createWorktree, git, hasCommits, jobWorktree, land, leftoverMarkers, operationInProgress, projectRoot, reapply, removeWorktree, withLock, worktreeDiff,
@@ -92,7 +93,7 @@ function inlinePlan(root: string, req: DelegateRequest): { plan: string } | { fa
 }
 
 /** What a tool call that may start workers gets from the server. */
-export type WorkerContext = { provider: Provider; opencode: (route: Route) => Promise<Opencode>; progress: Progress };
+export type WorkerContext = { provider: Provider; opencode?: (route: Route) => Promise<Opencode>; progress: Progress };
 
 export async function delegate(req: DelegateRequest, ctx: WorkerContext): Promise<string> {
   const root = projectRoot(process.cwd());
@@ -139,8 +140,8 @@ export async function delegate(req: DelegateRequest, ctx: WorkerContext): Promis
   if (busy) return failBlock(`${busy} in the working tree; finish or abort it, then delegate again`);
 
   // one boot with one route for every group: a config change would restart OpenCode under the batch's running jobs
-  const opencode = await ctx.opencode(route);
-  const release = holdOpencode();
+  const opencode = ctx.provider.provider === "antigravity" ? undefined : await ctx.opencode!(route);
+  const release = ctx.provider.provider === "antigravity" ? () => {} : holdOpencode();
   const shared = { root, input, plan, config, route, opencode, provider: ctx.provider, progress: ctx.progress };
   // wait=false: every group is RUNNING the moment it is created
   if (groups.length === 1) {
@@ -153,7 +154,7 @@ export async function delegate(req: DelegateRequest, ctx: WorkerContext): Promis
   return input.wait === false ? run.render() : run.look(false, ctx.progress);
 }
 
-type Shared = { root: string; input: DelegateInput; plan: Plan; config: Config; route: Route; opencode: Opencode; provider: Provider; progress: Progress };
+type Shared = { root: string; input: DelegateInput; plan: Plan; config: Config; route: Route; opencode?: Opencode; provider: Provider; progress: Progress };
 
 /** One group, one job: what `runGroup` needs beyond what the whole delegation shares. */
 type GroupRun = Shared & {
@@ -453,33 +454,56 @@ function runGroup(g: GroupRun) {
       startClock(); // queued time is not working time
       worktree = createWorktree(root, job, config.link_dirs);
       carried = new Set(dirty());
-      session = await openSession({
-        opencode,
-        directory: worktree.path,
-        model,
-        permission: rulesetFor(worktree, cmds, config),
-        // nobody watches a fix job for a BLOCKED block: its questions are rejected (with a risk line)
-        onQuestion: g.fix ? undefined : onQuestion,
-        signal: halt.signal,
-        onEvent: (event, turns) => {
-          appendFileSync(join(dir, "events.jsonl"), redact(JSON.stringify(event)) + "\n");
-          // one progress notification per worker turn; finer events (deltas, usage) would only be noise in /tasks
-          if (event.type === "message.part.updated" && event.properties.part.type === "tool") {
-            const part = event.properties.part;
-            if (part.state.status === "completed" || part.state.status === "error") {
-              const target = toolTarget(part.tool, part.state.input, worktree?.path ?? "");
-              tell(turns, `step ${g.group.label} · turn ${turns} · ${part.tool}${target ? " " + target : ""} · ${elapsed()}s`);
-              if (!stopped && !blocked.has(job)) finalize("RUNNING"); // so `jobs list`/`show` see live turns
-              // finishing on the last allowed turn is fine
-              if (part.tool !== "finish") {
-                overTurns();
-                reproDue();
+      session = g.provider.provider === "antigravity"
+        ? await openAgySession({
+            directory: worktree.path,
+            model,
+            signal: halt.signal,
+            customPath: config.agy_path,
+            onEvent: (event, turns) => {
+              appendFileSync(join(dir, "events.jsonl"), redact(JSON.stringify(event)) + "\n");
+              if (event.type === "message.part.updated" && event.properties.part.type === "tool") {
+                const part = event.properties.part;
+                if (part.state.status === "completed" || part.state.status === "error") {
+                  const target = toolTarget(part.tool, part.state.input, worktree?.path ?? "");
+                  tell(turns, `step ${g.group.label} · turn ${turns} · ${part.tool}${target ? " " + target : ""} · ${elapsed()}s`);
+                  if (!stopped && !blocked.has(job)) finalize("RUNNING");
+                  if (part.tool !== "finish") {
+                    overTurns();
+                    reproDue();
+                  }
+                }
               }
-            }
-          }
-          if (event.type === "message.updated") overCost();
-        },
-      });
+              if (event.type === "message.updated") overCost();
+            },
+          })
+        : await openSession({
+            opencode: opencode!,
+            directory: worktree.path,
+            model,
+            permission: rulesetFor(worktree, cmds, config),
+            // nobody watches a fix job for a BLOCKED block: its questions are rejected (with a risk line)
+            onQuestion: g.fix ? undefined : onQuestion,
+            signal: halt.signal,
+            onEvent: (event, turns) => {
+              appendFileSync(join(dir, "events.jsonl"), redact(JSON.stringify(event)) + "\n");
+              // one progress notification per worker turn; finer events (deltas, usage) would only be noise in /tasks
+              if (event.type === "message.part.updated" && event.properties.part.type === "tool") {
+                const part = event.properties.part;
+                if (part.state.status === "completed" || part.state.status === "error") {
+                  const target = toolTarget(part.tool, part.state.input, worktree?.path ?? "");
+                  tell(turns, `step ${g.group.label} · turn ${turns} · ${part.tool}${target ? " " + target : ""} · ${elapsed()}s`);
+                  if (!stopped && !blocked.has(job)) finalize("RUNNING"); // so `jobs list`/`show` see live turns
+                  // finishing on the last allowed turn is fine
+                  if (part.tool !== "finish") {
+                    overTurns();
+                    reproDue();
+                  }
+                }
+              }
+              if (event.type === "message.updated") overCost();
+            },
+          });
       finalize("RUNNING"); // now with the worktree, so a restart can point at it
       const provider = g.provider.provider;
       // a provider limit is not a cap: the worker aborts the session itself and the job falls back, or stops as BUDGET
@@ -1097,8 +1121,8 @@ async function integrateLater(root: string, config: Config, batch: string, ctx: 
     const gate = consentGate(root, ctx.provider.provider);
     if ("block" in gate) throw new Error(`no consent for a fix job: ${gate.block.split("\n")[0]}`);
     const plan = parsePlan(readFileSync(join(root, record.plan), "utf8"));
-    const opencode = await ctx.opencode(gate.route);
-    release = holdOpencode();
+    const opencode = ctx.provider.provider === "antigravity" ? undefined : await ctx.opencode!(gate.route);
+    release = ctx.provider.provider === "antigravity" ? () => {} : holdOpencode();
     return { root, input: { plan: record.plan, steps: record.steps }, plan, config, route: gate.route, opencode, provider: ctx.provider, progress: ctx.progress };
   };
   try {

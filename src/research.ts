@@ -10,6 +10,7 @@ import { projectScripts, researchRuleset } from "./permissions.js";
 import { normalisePath } from "./platform.js";
 import { failBlock, renderResearch, type ResearchRecord } from "./report.js";
 import { chain, modelName, recordSpend, runRouted, type Route } from "./routing.js";
+import { openAgySession } from "./antigravity.js";
 import { openSession, releaseDirectory, type Session } from "./worker.js";
 import { createWorktree, git, hasCommits, projectRoot, removeWorktree, type Worktree } from "./workspace.js";
 import { checkAllows } from "./verify.js";
@@ -33,7 +34,7 @@ type Answer = Pick<ResearchRecord, "status" | "answer" | "refs" | "confidence" |
 
 export async function research(
   input: ResearchInput,
-  ctx: { provider: Provider; opencode: (route: Route) => Promise<Opencode>; progress: (turns: number, message: string) => void },
+  ctx: { provider: Provider; opencode?: (route: Route) => Promise<Opencode>; progress: (turns: number, message: string) => void },
 ): Promise<string> {
   const root = projectRoot(process.cwd());
   // first: an unapproved repo gets CONSENT before any record, OpenCode boot or provider call
@@ -67,8 +68,8 @@ export async function research(
   const { limits } = config;
   const maxWords = Math.min(input.max_words ?? DEFAULT_WORDS, MAX_WORDS);
 
-  const opencode = await ctx.opencode(gate.route);
-  const release = holdOpencode();
+  const opencode = ctx.provider.provider === "antigravity" ? undefined : await ctx.opencode!(gate.route);
+  const release = ctx.provider.provider === "antigravity" ? () => {} : holdOpencode();
   const { id, dir } = newResearch(root);
   const write = (name: string, value: unknown) => writeFileSync(join(dir, name), redact(typeof value === "string" ? value : JSON.stringify(value, null, 2) + "\n"));
   // the research model, then its fallbacks, each only if the repo's allowlist kept it (src/consent.ts)
@@ -104,24 +105,47 @@ export async function research(
       if (why.cap !== "turns") halt.abort(); // a turn cap lets the turn end: partialAnswer() needs a live session (as src/jobs.ts)
     };
     const timer = setTimeout(() => stop({ status: "FAIL", reason: `minute cap (${limits.max_minutes} min) reached` }), limits.max_minutes * 60_000);
-    const session: Session = await openSession({
-      opencode, directory: worktree.path, model: models.first, agent: RESEARCH_AGENT, permission, signal: halt.signal,
-      onEvent: (event, turns) => {
-        appendFileSync(join(dir, "events.jsonl"), redact(JSON.stringify(event)) + "\n");
-        if (event.type === "message.part.updated" && event.properties.part.type === "tool") {
-          const { tool, state } = event.properties.part;
-          if (state.status === "completed" && tool === "read") files.add(String(state.input.filePath));
-          if (state.status === "completed" && tool === "bash") ran.push(String(state.input.command ?? ""));
-          if (state.status === "completed" || state.status === "error") {
-            ctx.progress(turns, `turn ${turns}: ${tool}`);
-            if (turns >= limits.max_turns) stop({ status: "FAIL", reason: `turn cap (${limits.max_turns}) reached`, cap: "turns" });
-          }
-        }
-        if (event.type === "message.updated" && session.totals().usage.costUsd >= limits.max_cost_usd) {
-          stop({ status: "BUDGET", reason: `job cap ($${limits.max_cost_usd.toFixed(2)}) reached` });
-        }
-      },
-    });
+    const session: Session = ctx.provider.provider === "antigravity"
+      ? await openAgySession({
+          directory: worktree.path,
+          model: models.first,
+          agent: RESEARCH_AGENT,
+          signal: halt.signal,
+          customPath: config.agy_path,
+          onEvent: (event, turns) => {
+            appendFileSync(join(dir, "events.jsonl"), redact(JSON.stringify(event)) + "\n");
+            if (event.type === "message.part.updated" && event.properties.part.type === "tool") {
+              const { tool, state } = event.properties.part;
+              if (state.status === "completed" && (tool === "read" || tool === "read_file" || tool === "view_file")) files.add(String(state.input.filePath || state.input.Path || ""));
+              if (state.status === "completed" && (tool === "bash" || tool === "run_command")) ran.push(String((state.input.command || state.input.CommandLine) ?? ""));
+              if (state.status === "completed" || state.status === "error") {
+                ctx.progress(turns, `turn ${turns}: ${tool}`);
+                if (turns >= limits.max_turns) stop({ status: "FAIL", reason: `turn cap (${limits.max_turns}) reached`, cap: "turns" });
+              }
+            }
+            if (event.type === "message.updated" && session.totals().usage.costUsd >= limits.max_cost_usd) {
+              stop({ status: "BUDGET", reason: `job cap ($${limits.max_cost_usd.toFixed(2)}) reached` });
+            }
+          },
+        })
+      : await openSession({
+          opencode: opencode!, directory: worktree.path, model: models.first, agent: RESEARCH_AGENT, permission, signal: halt.signal,
+          onEvent: (event, turns) => {
+            appendFileSync(join(dir, "events.jsonl"), redact(JSON.stringify(event)) + "\n");
+            if (event.type === "message.part.updated" && event.properties.part.type === "tool") {
+              const { tool, state } = event.properties.part;
+              if (state.status === "completed" && tool === "read") files.add(String(state.input.filePath));
+              if (state.status === "completed" && tool === "bash") ran.push(String(state.input.command ?? ""));
+              if (state.status === "completed" || state.status === "error") {
+                ctx.progress(turns, `turn ${turns}: ${tool}`);
+                if (turns >= limits.max_turns) stop({ status: "FAIL", reason: `turn cap (${limits.max_turns}) reached`, cap: "turns" });
+              }
+            }
+            if (event.type === "message.updated" && session.totals().usage.costUsd >= limits.max_cost_usd) {
+              stop({ status: "BUDGET", reason: `job cap ($${limits.max_cost_usd.toFixed(2)}) reached` });
+            }
+          },
+        });
     try {
       // a provider limit continues the same session on the next fallback (src/routing.ts), never waiting it out
       ({ text, error, budget } = await runRouted(session, prompt, models, ctx.provider.provider));

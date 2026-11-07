@@ -9,6 +9,7 @@ import { presetHere } from "./consent.js";
 import { detectProvider, NO_PROVIDER, redact } from "./credentials.js";
 import { delegate, jobs, landJobs, recoverJobs, reply } from "./jobs.js";
 import { ensureOpencode, stopOpencode } from "./opencode.js";
+import { ensureAgyAcp, stopAgyAcp } from "./antigravity.js";
 import { PLAN_FORMAT } from "./plan.js";
 import { failBlock } from "./report.js";
 import { MAX_WORDS, research } from "./research.js";
@@ -97,6 +98,10 @@ export async function serve(host: "claude" | "codex" = "claude") {
       const provider = detectProvider();
       if (!provider) return safeText(NO_PROVIDER);
       try {
+        if (provider.provider === "antigravity") {
+          const agy = await ensureAgyAcp();
+          return safeText(`OK cheapag ${version} antigravity=${agy.version} provider=antigravity via=login preset=${presetHere("antigravity")}`);
+        }
         const opencode = await ensureOpencode(provider);
         return safeText(`OK cheapag ${version} opencode=${opencode.version} provider=${provider.provider} via=${provider.via} preset=${presetHere(provider.provider)}`);
       } catch (err) {
@@ -238,8 +243,9 @@ export async function serve(host: "claude" | "codex" = "claude") {
     if (process.env.CHEAPAG_DEBUG_SHUTDOWN === "1") process.stderr.write(`cheapag-shutdown: ${line}\n`);
   };
   process.on("exit", () => {
-    shutdownLog("exit handler, stopping opencode");
+    shutdownLog("exit handler, stopping opencode and antigravity");
     stopOpencode(true);
+    void stopAgyAcp();
   });
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
     process.on(signal, () => {

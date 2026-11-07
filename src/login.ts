@@ -7,10 +7,11 @@ import { createInterface } from "node:readline/promises";
 import { loadConfig, userConfigFile } from "./config.js";
 import { detectProvider, LOGIN_COMMAND as LOGIN, PROVIDERS, providerLabel as label, redact, savedProviders, type Provider } from "./credentials.js";
 import { ensureOpencode, opencodeBinary, stopOpencode } from "./opencode.js";
+import { agyBinary, openAgySession, stopAgyAcp } from "./antigravity.js";
 import { runCli } from "./platform.js";
 import { installPlugin, stableNode } from "./install.js";
 import { fullRoute, modelName, presetOf, PRESET_NAMES, PRESETS, type ModelsConfig } from "./routing.js";
-import { runSession } from "./worker.js";
+import { runSession, type SessionResult } from "./worker.js";
 
 /**
  * `cheapag login`: the only setup (ADR-0004). Picks a provider, lets the bundled OpenCode's own login take the key
@@ -57,8 +58,11 @@ export async function login(args: string[] = [], { setup = false }: { setup?: bo
     if (!flag) out(`No terminal to ask in: worker models stay ${choice} for ${label(saved.provider)}; pass --preset to choose`);
     return savePreset(saved.provider, choice, out) ? 0 : 1;
   }
-  // the live check's OpenCode runs in its own process group; take it down on Ctrl-C too
-  process.on("exit", () => stopOpencode(true));
+  // the live check's engines run in their own process groups; take them down on Ctrl-C too
+  process.on("exit", () => {
+    stopOpencode(true);
+    void stopAgyAcp();
+  });
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => process.exit(130));
   out("Cheap Agent login");
   const current = detectProvider();
@@ -85,11 +89,26 @@ export async function login(args: string[] = [], { setup = false }: { setup?: bo
     return 1;
   }
 
-  // the bundled OpenCode prompts for the key with hidden input and saves it in its own credential store
-  const saved = spawnSync(opencodeBinary(), ["auth", "login", "--provider", picked.id], { stdio: "inherit" });
-  if (saved.status !== 0 || !savedProviders().includes(picked.id)) {
-    out(`✗ ${picked.label} login was not saved; run ${LOGIN} to try again`);
-    return 1;
+  if (picked.id === "antigravity") {
+    try {
+      const bin = agyBinary();
+      const check = spawnSync(bin, ["models"], { stdio: "pipe", encoding: "utf8" });
+      if (check.status !== 0) {
+        out(`✗ Antigravity CLI ('agy') authentication check failed: ${check.stderr || check.stdout}`);
+        out(`Please run 'agy' in your terminal to authenticate first, then run ${LOGIN} again.`);
+        return 1;
+      }
+    } catch (err) {
+      out(`✗ Antigravity CLI error: ${(err as Error).message}`);
+      return 1;
+    }
+  } else {
+    // the bundled OpenCode prompts for the key with hidden input and saves it in its own credential store
+    const saved = spawnSync(opencodeBinary(), ["auth", "login", "--provider", picked.id], { stdio: "inherit" });
+    if (saved.status !== 0 || !savedProviders().includes(picked.id)) {
+      out(`✗ ${picked.label} login was not saved; run ${LOGIN} to try again`);
+      return 1;
+    }
   }
   if (!savePreset(picked.id, choice, out)) return 1;
 
@@ -130,17 +149,29 @@ function currentPreset(provider: Provider["provider"]) {
 /** Writes the preset as the user config's `models`, other keys kept; custom writes nothing. */
 function savePreset(provider: Provider["provider"], choice: Choice, out: (line?: string) => void) {
   const file = userConfigFile();
-  if (choice === "custom") {
+  const existing = readUser();
+  if (choice === "custom" && provider !== "antigravity" && existing.provider !== "antigravity") {
     out(`Worker models: custom, nothing written; set "models" in a repo's cheapag.json, or in ${file} for every repo`);
     return true;
   }
   try {
-    const config = { ...readUser(), models: PRESETS[provider][choice] };
+    const config = {
+      ...existing,
+      ...(provider === "antigravity" ? { provider: "antigravity" } : {}),
+      ...(choice !== "custom" ? { models: PRESETS[provider][choice] } : {}),
+    };
+    if (provider !== "antigravity" && config.provider === "antigravity") {
+      delete config.provider;
+    }
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, JSON.stringify(config, null, 2) + "\n");
   } catch (err) {
     out(`✗ ${file}: ${(err as Error).message}; worker models not saved`);
     return false;
+  }
+  if (choice === "custom") {
+    out(`Worker models: custom, nothing written; set "models" in a repo's cheapag.json, or in ${file} for every repo`);
+    return true;
   }
   out(`✓ Worker models: ${choice} (implement ${PRESETS[provider][choice].implement}), saved in ${file}`);
   return true;
@@ -156,26 +187,39 @@ async function liveCheck(provider: Provider): Promise<{ ok: boolean; line: strin
     const route = fullRoute(provider.provider, loadConfig(dir).models);
     const model = route.implement;
     name = modelName(model);
-    // with the route, OpenCode's config pins this model too (on OpenRouter: data collection denied)
-    const run = ensureOpencode(provider, dir, route).then((opencode) =>
-      runSession({
-        opencode,
+
+    let run: Promise<SessionResult>;
+    if (provider.provider === "antigravity") {
+      run = openAgySession({
         directory: dir,
-        model: { providerID: model.providerID, id: model.id },
-        prompt: "Live check: reply with the single word OK. Do not use any tools.",
-        onEvent: () => {},
-      }),
-    );
+        model,
+      }).then(async (session) => {
+        const result = await session.run("Live check: reply with the single word OK. Do not use any tools.");
+        return { ...session.totals(), ...result };
+      });
+    } else {
+      // with the route, OpenCode's config pins this model too (on OpenRouter: data collection denied)
+      run = ensureOpencode(provider, dir, route).then((opencode) =>
+        runSession({
+          opencode,
+          directory: dir,
+          model: { providerID: model.providerID, id: model.id },
+          prompt: "Live check: reply with the single word OK. Do not use any tools.",
+          onEvent: () => {},
+        }),
+      );
+    }
     // covers boot as well as the answer; on timeout, stopping OpenCode below ends the session, and login exits
     const timeout = new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error("no answer within 90s")), CHECK_TIMEOUT_MS)));
     const result = await Promise.race([run, timeout]);
     if (result.error) return { ok: false, line: explain(result.error, name) };
-    return { ok: true, line: `${name} answered (cost $${result.usage.costUsd.toFixed(4)})` };
+    return { ok: true, line: `${name} answered${result.usage.costUsd ? ` (cost $${result.usage.costUsd.toFixed(4)})` : ""}` };
   } catch (err) {
     return { ok: false, line: explain((err as Error).message, name) };
   } finally {
     clearTimeout(timer);
     stopOpencode();
+    void stopAgyAcp();
     rmSync(dir, { recursive: true, force: true });
   }
 }

@@ -7,6 +7,7 @@ import type { ModelsConfig } from "./routing.js";
 export type Config = {
   test_cmd?: string; integration_cmd?: string; link_dirs: string[]; allow_commands: string[]; limits: Limits; retention: Retention;
   models: ModelsConfig; escalation_skip_at: number; guard_lines: number; hard_tasks: HardTasks; takeover: TakeOver;
+  provider?: string; agy_path?: string;
 };
 /** Who implements a hard task (ticket 26): the worker on `models.hard`, Claude itself, or Claude's own Sonnet subagent. */
 export const HARD_TASKS = ["delegate", "self", "sonnet"] as const;
@@ -61,7 +62,7 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & { l
     throw new Error(`${file} is not valid JSON: ${(err as Error).message}`);
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${file} must hold a JSON object`);
-  const { test_cmd, integration_cmd, link_dirs, allow_commands, limits, retention, models, escalation_skip_at, guard_lines, hard_tasks, takeover } = value as Record<string, unknown>;
+  const { test_cmd, integration_cmd, link_dirs, allow_commands, limits, retention, models, escalation_skip_at, guard_lines, hard_tasks, takeover, provider, agy_path } = value as Record<string, unknown>;
   if (limits !== undefined && (typeof limits !== "object" || limits === null || Array.isArray(limits))) throw new Error(`${file}: limits must be an object`);
   const caps: Partial<Limits> = {};
   // E4's self_fix_attempts is not read yet
@@ -89,11 +90,11 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & { l
   }
   if (models !== undefined && (typeof models !== "object" || models === null || Array.isArray(models))) throw new Error(`${file}: models must be an object`);
   const roles = (models ?? {}) as Record<string, unknown>;
-  const name = (v: unknown) => typeof v === "string" && /^[\w.-]+\/\S+$/.test(v);
+  const name = (v: unknown) => typeof v === "string" && (/^[\w.-]+\/\S+$/.test(v) || /^[\w.-]+$/.test(v));
   for (const role of ["implement", "medium", "hard", "research", "escalation"]) {
-    if (roles[role] !== undefined && !name(roles[role])) throw new Error(`${file}: models.${role} must be a provider/model name, e.g. opencode-go/deepseek-v4.1-flash`);
+    if (roles[role] !== undefined && !name(roles[role])) throw new Error(`${file}: models.${role} must be a model name, e.g. antigravity/gemini-3.8-flash or opencode-go/deepseek-v4.1-flash`);
   }
-  if (roles.fallback !== undefined && (!Array.isArray(roles.fallback) || !roles.fallback.every(name))) throw new Error(`${file}: models.fallback must be a list of provider/model names`);
+  if (roles.fallback !== undefined && (!Array.isArray(roles.fallback) || !roles.fallback.every(name))) throw new Error(`${file}: models.fallback must be a list of model names`);
   if (escalation_skip_at !== undefined && (typeof escalation_skip_at !== "number" || !(escalation_skip_at > 0 && escalation_skip_at <= 1))) {
     throw new Error(`${file}: escalation_skip_at must be a number above 0 and at most 1`);
   }
@@ -102,6 +103,8 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & { l
   if (guard_lines !== undefined && (typeof guard_lines !== "number" || !Number.isInteger(guard_lines) || guard_lines <= 0)) {
     throw new Error(`${file}: guard_lines must be a positive whole number`);
   }
+  if (provider !== undefined && (typeof provider !== "string" || !provider.trim())) throw new Error(`${file}: provider must be a non-empty string`);
+  if (agy_path !== undefined && (typeof agy_path !== "string" || !agy_path.trim())) throw new Error(`${file}: agy_path must be a non-empty string`);
   if (test_cmd !== undefined && (typeof test_cmd !== "string" || !test_cmd.trim())) throw new Error(`${file}: test_cmd must be a non-empty string`);
   // null is E4's written default: test_cmd
   if (integration_cmd != null && (typeof integration_cmd !== "string" || !integration_cmd.trim())) throw new Error(`${file}: integration_cmd must be a non-empty string`);
@@ -127,5 +130,7 @@ function read(file: string): Partial<Omit<Config, "limits" | "retention">> & { l
     ...(guard_lines !== undefined && { guard_lines }),
     ...(hard_tasks !== undefined && { hard_tasks: hard_tasks as HardTasks }),
     ...(takeover !== undefined && { takeover: takeover as TakeOver }),
+    ...(provider !== undefined && { provider }),
+    ...(agy_path !== undefined && { agy_path }),
   };
 }

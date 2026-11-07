@@ -20,6 +20,11 @@ const OPENROUTER_PRIVATE = { provider: { data_collection: "deny", sort: "through
  * (checked 2026-10-16). Direct DeepSeek has no other models to fall back to.
  */
 export const ROLES: Record<ProviderId, { implement: string[]; research: string[]; escalation: string }> = {
+  antigravity: {
+    implement: ["gemini-3.8-flash", "gemini-3.8-flash-high", "gemini-3.8-flash-medium"],
+    research: ["gemini-3.8-flash", "gemini-3.8-flash-medium"],
+    escalation: "claude-sonnet-4-6",
+  },
   "opencode-go": {
     implement: ["deepseek-v4.1-flash", "qwen3.7-plus", "glm-5.3", "kimi-k3"],
     research: ["qwen3.8-flash", "deepseek-v4.1-flash"],
@@ -43,6 +48,11 @@ export type Preset = (typeof PRESET_NAMES)[number];
 // lost (ticket 25) but showed no gain on the hard tier (26), so it is opt-in as strongest. cheapest is balanced until a
 // cheaper worker than Flash exists (a tie reports balanced). Kimi K3 was dropped: $0.36 worker per task, BUDGET on half.
 export const PRESETS: Record<ProviderId, Record<Preset, ModelsConfig>> = {
+  antigravity: {
+    cheapest: { implement: "antigravity/gemini-3.8-flash" },
+    balanced: { implement: "antigravity/gemini-3.8-flash" },
+    strongest: { implement: "antigravity/claude-sonnet-4-6", medium: "antigravity/claude-sonnet-4-6" },
+  },
   "opencode-go": {
     cheapest: { implement: "opencode-go/deepseek-v4.1-flash" },
     balanced: { implement: "opencode-go/deepseek-v4.1-flash" },
@@ -99,7 +109,7 @@ export const tierModel = (r: Route, d?: Difficulty) => (d === "hard" ? r.hard ??
 /** Every model a provider's worker may run, defaults overridden by the config, before the repo's allowlist filters them. */
 export function fullRoute(provider: ProviderId, models: ModelsConfig = {}): Route {
   const roles = ROLES[provider];
-  const own = (name?: string) => (name?.startsWith(`${provider}/`) ? name.slice(provider.length + 1) : undefined);
+  const own = (name?: string) => (name?.startsWith(`${provider}/`) ? name.slice(provider.length + 1) : (!name?.includes("/") ? name : undefined));
   const ownFallbacks = models.fallback?.map(own).filter((id): id is string => !!id);
   const [research, ...researchFallbacks] = [own(models.research) ?? roles.research[0], ...roles.research.slice(1)];
   const tier = (name?: string) => (own(name) ? model(provider, own(name)!) : undefined);

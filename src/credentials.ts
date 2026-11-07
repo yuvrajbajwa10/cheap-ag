@@ -6,6 +6,7 @@ import { join } from "node:path";
 
 /** Providers in detection order; `label` is what `cheapag login` shows. */
 export const PROVIDERS = [
+  { id: "antigravity", label: "Antigravity CLI (agy)" },
   { id: "opencode-go", label: "OpenCode Go" },
   { id: "openrouter", label: "OpenRouter" },
   { id: "deepseek", label: "DeepSeek" },
@@ -22,15 +23,33 @@ function authFile() {
   return join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "opencode", "auth.json");
 }
 
+function userConfigFile() {
+  return join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "cheapag", "config.json");
+}
+
 /** Supported providers with a saved login, in detection order. Only the provider ids are used; keys are never kept or passed on. */
 export function savedProviders(): Provider["provider"][] {
+  const result: Provider["provider"][] = [];
+  try {
+    const file = userConfigFile();
+    if (existsSync(file)) {
+      const cfg = JSON.parse(readFileSync(file, "utf8"));
+      if (cfg.provider === "antigravity") result.push("antigravity");
+    }
+  } catch {}
+
   let saved: Record<string, unknown>;
   try {
     saved = existsSync(authFile()) ? JSON.parse(readFileSync(authFile(), "utf8")) : {};
   } catch {
-    return []; // an unreadable auth file is the same as no login
+    saved = {};
   }
-  return PROVIDERS.map((p) => p.id).filter((id) => id in saved);
+  for (const p of PROVIDERS) {
+    if (p.id !== "antigravity" && p.id in saved && !result.includes(p.id)) {
+      result.push(p.id);
+    }
+  }
+  return result;
 }
 
 export const providerLabel = (id: Provider["provider"]) => PROVIDERS.find((p) => p.id === id)!.label;
