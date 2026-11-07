@@ -151,7 +151,8 @@ export async function stopAgyAcp(): Promise<void> {
   }
 }
 
-const WORKER_INSTRUCTIONS = `You implement plan steps in this repository by editing files yourself.
+const workerInstructions = (dir: string) => `You are a dedicated implementation specialist who writes and verifies high-quality code. You implement plan steps in this repository by editing files yourself.
+- Your working directory is ${dir.replace(/\\/g, "/")}. Your file tools need ABSOLUTE paths (relative ones fail): always build them under that directory, e.g. ${dir.replace(/\\/g, "/")}/math.js. It is an isolated git worktree. Never read, edit or run anything outside it: not the parent repository that \`git rev-parse --git-common-dir\` or \`--show-toplevel\` would lead you to, and not its .cheapag/ folder. Edits outside this directory are lost and count as a failure.
 - Stay within the step's files and make precise edits. If you must edit anything else, report it under risks.
 - Never install packages or run install commands.
 - Never touch .git, .env* files or lockfiles. Never commit.
@@ -189,7 +190,7 @@ export async function openAgySession(opts: {
     sessionId: sessionID,
     configId: "mode",
     value: "accept-edits",
-  }).catch(() => {});
+  }).catch((err) => { throw new Error(`could not set the Antigravity session mode to accept-edits: ${(err as Error).message}`); });
 
   // Set model if specified
   const modelId = opts.model?.id;
@@ -198,7 +199,7 @@ export async function openAgySession(opts: {
       sessionId: sessionID,
       configId: "model",
       value: modelId,
-    }).catch(() => {});
+    }).catch((err) => { throw new Error(`could not set the Antigravity model to ${modelId}: ${(err as Error).message}`); });
   }
 
   let turns = 0;
@@ -220,11 +221,12 @@ export async function openAgySession(opts: {
     if (signal?.aborted || interrupt?.aborted) return { text: "", error: "aborted" };
 
     if (modelOverride?.id) {
-      await client.request("session/set_config_option", {
+      const failed = await client.request("session/set_config_option", {
         sessionId: sessionID,
         configId: "model",
         value: modelOverride.id,
-      }).catch(() => {});
+      }).then(() => undefined, (err) => `could not set the Antigravity model to ${modelOverride.id}: ${(err as Error).message}`);
+      if (failed) return { text: "", error: failed };
     }
 
     let assistantText = "";
@@ -265,7 +267,7 @@ export async function openAgySession(opts: {
 
     try {
       // Prepend instructions if not already present
-      const fullPrompt = prompt.includes("cheapag-result") ? prompt : `${WORKER_INSTRUCTIONS}\n\n${prompt}`;
+      const fullPrompt = prompt.includes("cheapag-result") ? prompt : `${workerInstructions(opts.directory)}\n\n${prompt}`;
       const res = await client.request("session/prompt", {
         sessionId: sessionID,
         prompt: [{ type: "text", text: fullPrompt }],

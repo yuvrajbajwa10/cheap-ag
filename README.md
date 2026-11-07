@@ -1,23 +1,23 @@
 <h1 align="center">Cheap Agent</h1>
 
 <p align="center">
-  <em>Your frontier model is a principal engineer. Stop paying it to type.</em>
+  <em>Your frontier model is a principal engineer. A dedicated, specialized agent writes and verifies the code.</em>
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/npm/v/cheap-agent?style=flat-square&color=111111&label=npm" alt="npm">
   <img src="https://img.shields.io/badge/for-Claude%20Code%20%7C%20Codex-111111?style=flat-square" alt="For Claude Code and Codex">
-  <img src="https://img.shields.io/badge/cheap%20model-%C2%BD%C2%A2%20a%20task-111111?style=flat-square" alt="Cheap model: half a cent a task">
+  <img src="https://img.shields.io/badge/worker%20model-cost--efficient%20specialist-111111?style=flat-square" alt="Worker model: cost-efficient specialist">
   <img src="https://img.shields.io/badge/tested%20on-SWE--bench%20Verified-111111?style=flat-square" alt="Tested on SWE-bench Verified">
   <img src="https://img.shields.io/badge/license-MIT-111111?style=flat-square" alt="MIT License">
 </p>
 
 <p align="center">
-  <img src="assets/demo.gif" width="880" alt="Two real Claude Code sessions side by side, same prompt: Claude Code alone climbs to 233k Opus tokens, Claude Code with Cheap Agent stops at 132k, and the cheap model costs $0.007.">
+  <img src="assets/demo.gif" width="880" alt="Two real Claude Code sessions side by side, same prompt: Claude Code alone climbs to 233k Opus tokens, Claude Code with Cheap Agent stops at 132k, and the dedicated worker model costs $0.007.">
 </p>
 
 <p align="center">
-  <img src="assets/hero.svg" width="880" alt="Same feature, same prompt: Claude Code alone used 154k Opus tokens in 5 turns; with Cheap Agent 57k Opus tokens in 2 turns, 63% fewer, and the cheap model cost half a cent. Both versions pass all their tests.">
+  <img src="assets/hero.svg" width="880" alt="Same feature, same prompt: Claude Code alone used 154k Opus tokens in 5 turns; with Cheap Agent 57k Opus tokens in 2 turns, 63% fewer, and the dedicated worker model cost half a cent. Both versions pass all their tests.">
 </p>
 
 <p align="center">
@@ -102,9 +102,9 @@ $cheapag:allow
 A few dollars lasts hundreds of tasks. It runs on macOS, Linux and Windows.
 
 **Windows:** you also need [Git for Windows](https://git-scm.com/downloads/win) (Git Bash). Known so far:
-- The very first job can take about 2 minutes while the cheap model's engine (OpenCode) sets itself up. Later jobs start in seconds.
+- The very first job can take about 2 minutes while the worker model's engine (OpenCode) sets itself up. Later jobs start in seconds.
 - If that engine crashes mid-session, Cheap Agent starts a new one, but the crashed copy can stay running (`opencode.exe` in Task Manager) until you end it or restart.
-- The cheap model can't read your dependency folders (like `node_modules`) inside its copy of the project. Your tests still run normally.
+- The worker model can't read your dependency folders (like `node_modules`) inside its copy of the project. Your tests still run normally.
 
 ---
 
@@ -114,7 +114,7 @@ You would never pay them to type out a CSV exporter.
 
 But that's exactly what happens every time your frontier model (Claude Opus, GPT-6 Astra or Sol) writes your code: the most expensive model you have, reading files, typing boilerplate, re-running tests, burning through your plan.
 
-**Cheap Agent fixes the org chart.** Your frontier model plans and decides. A model that costs half a cent per task does the typing, in its own copy of your project, and has to prove its work with a test before anything reaches you.
+**Cheap Agent fixes the org chart.** Your frontier model plans and decides. A dedicated, high-capability implementation model does the typing in its own copy of your project, and has to prove its work with a test before anything reaches you.
 
 ## Why I built this
 
@@ -148,22 +148,22 @@ Cheap Agent shines on the work in between: real features and real fixes in real 
 |---|---|---|
 | Opus tokens | 154k | **57k** |
 | Opus turns | 5 | **2** |
-| Who wrote the code | Opus | a cheap model, for **$0.005** |
+| Who wrote the code | Opus | a dedicated worker model, for **$0.005** |
 | Tests | 33 passing | **38 passing** |
 
-Opus wrote one task. The cheap model did the rest, tests included.
+Opus wrote one task. The dedicated worker model did the rest, tests included.
 
 ## Built with itself
 
-Native Windows support (36 files, +753/−278 lines) was built with Cheap Agent. Claude found the problems and wrote the plans. The cheap model wrote the code in 30 jobs for **$0.29 in total**, Sonnet helpers finished what it couldn't and read OpenCode's source to find the two Windows-only bugs, and the full test suite now passes on Linux and Windows.
+Native Windows support (36 files, +753/−278 lines) was built with Cheap Agent. Claude found the problems and wrote the plans. The dedicated worker model wrote the code in 30 jobs for **$0.29 in total**, Sonnet helpers finished what it couldn't and read OpenCode's source to find the two Windows-only bugs, and the full test suite now passes on Linux and Windows.
 
 ## How it works
 
 <p align="center">
-  <img src="assets/flow.svg" width="880" alt="How it works: Opus writes a short task; a cheap model works in its own copy of your project, writes a test that fails, fixes the code and makes the test pass; Cheap Agent runs the tests itself and only passing work lands, uncommitted; Opus reads a ten-line result and tells you. If the cheap model can't finish, a Sonnet helper finishes the step instead of Opus.">
+  <img src="assets/flow.svg" width="880" alt="How it works: Opus writes a short task; a dedicated worker model works in its own copy of your project, writes a test that fails, fixes the code and makes the test pass; Cheap Agent runs the tests itself and only passing work lands, uncommitted; Opus reads a ten-line result and tells you. If the worker model can't finish, a Sonnet helper finishes the step instead of Opus.">
 </p>
 
-- **Every change is proven.** The cheap model must write a test that fails before its fix and passes after. Cheap Agent runs the tests itself; it doesn't take the model's word for it.
+- **Every change is proven.** The worker model must write a test that fails before its fix and passes after. Cheap Agent runs the tests itself; it doesn't take the model's word for it.
 - **Your project stays clean.** Work happens in a private copy (a git worktree). Only passing work lands, uncommitted, so you review the diff like any other.
 - **Your frontier model stays in charge,** but it's held to it: Cheap Agent's hooks stop it from quietly redoing work that already passed, or (in Claude Code) doing a failed step itself when Sonnet can.
 
@@ -171,9 +171,9 @@ Native Windows support (36 files, +753/−278 lines) was built with Cheap Agent.
 
 | Claude Code | Codex | What it does |
 |---|---|---|
-| `/cheapag:allow` | `$cheapag:allow` | Your OK to send this project's code to the cheap model. Once per project. |
-| `/cheapag:status` | `$cheapag:status` | Recent jobs, and what the cheap model has cost you. |
-| `/cheapag:hook on` | `$cheapag:hook on` | No more "I'll just do it myself": your frontier model *must* hand code changes to the cheap model. |
+| `/cheapag:allow` | `$cheapag:allow` | Your OK to send this project's code to the worker model. Once per project. |
+| `/cheapag:status` | `$cheapag:status` | Recent jobs, and what the worker model has cost you. |
+| `/cheapag:hook on` | `$cheapag:hook on` | No more "I'll just do it myself": your frontier model *must* hand code changes to the dedicated worker model. |
 | `/cheapag:clean` | `$cheapag:clean` | Tidy up old job folders. |
 
 While a job runs, Claude Code shows the worker's latest step under the tool call, and Codex shows it each time it checks in (about every 15 seconds). To follow every step in a second terminal, run `npx cheap-agent watch`.
@@ -184,14 +184,14 @@ Optional. Put a `cheapag.json` in a project:
 
 | Setting | Default | What it does |
 |---|---|---|
-| `takeover` | `"sonnet"` | Who finishes a step the cheap model couldn't: a Sonnet helper, or `"self"` (your frontier model, capped at 15 tool calls). Claude Code only; Codex finishes it itself. |
-| `limits.max_turns` | `25` | The most turns the cheap model gets per step. |
-| `models` | from setup | Which cheap models to use. Switch with `npx cheap-agent login --preset strongest`. |
+| `takeover` | `"sonnet"` | Who finishes a step the worker model couldn't: a Sonnet helper, or `"self"` (your frontier model, capped at 15 tool calls). Claude Code only; Codex finishes it itself. |
+| `limits.max_turns` | `25` | The most turns the worker model gets per step. |
+| `models` | from setup | Which worker models to use. Switch with `npx cheap-agent login --preset strongest`. |
 
 ## FAQ
 
-**Is a half-cent model actually any good?**
-On its own, no. With a written task from your frontier model, a test it has to pass, and a referee that runs that test, yes, most of the time. When it isn't, it says so and a stronger model takes over.
+**Is a specialized worker model actually any good?**
+On its own, no. With a written task from your frontier model, a test it has to pass, and a referee that runs that test, yes, they do a thorough, verified job. When it isn't, it says so and a stronger model takes over.
 
 **Does my frontier model check the work?**
 The tests check the work, and Cheap Agent runs them. Opus checking every passing change cost three times the tokens and caught nothing in my runs, so it trusts a pass. You still review the diff before you commit.
@@ -203,7 +203,7 @@ To the provider you picked, only after you run `/cheapag:allow` (`$cheapag:allow
 Never. Changes land uncommitted. Your git, your call.
 
 **Why not just use Sonnet for everything?**
-Sonnet still costs real usage on every line it types. The cheap model types for half a cent. Sonnet only gets called when the cheap model is stuck.
+Sonnet still costs real usage on every line it types. The dedicated worker model writes the code at maximum efficiency. Sonnet only gets called when the worker model is stuck.
 
 **Can I use it at work, or build on it?**
 Yes. It's MIT licensed: use it, change it, share it, at any company, for free ([MIT License](./LICENSE)).

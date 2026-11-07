@@ -176,7 +176,7 @@ test("config models: the job runs on the configured implement model; a malformed
   expect(fake.recorded.sessions[0].model).toEqual({ providerID: "opencode-go", id: "glm-5.3" });
 
   writeFileSync(join(repo.dir, "cheapag.json"), JSON.stringify({ models: { fallback: "opencode-go/kimi-k3" } }));
-  expect(await delegate()).toMatch(/^FAIL reason: .*cheapag\.json: models\.fallback must be a list of provider\/model names$/);
+  expect(await delegate()).toMatch(/^FAIL reason: .*cheapag\.json: models\.fallback must be a list of model names$/);
 });
 
 // ---- ticket 26: difficulty routing ----
@@ -211,8 +211,8 @@ test("config: models.medium and models.hard take provider/model names; hard_task
   expect(load({}).hard_tasks).toBe("delegate");
   expect(load({ models: { medium: "opencode-go/glm-5.3", hard: "opencode-go/kimi-k3" }, hard_tasks: "sonnet" }))
     .toMatchObject({ models: { medium: "opencode-go/glm-5.3", hard: "opencode-go/kimi-k3" }, hard_tasks: "sonnet" });
-  expect(() => load({ models: { medium: "glm-5.3" } })).toThrow("models.medium must be a provider/model name");
-  expect(() => load({ models: { hard: 3 } })).toThrow("models.hard must be a provider/model name");
+  expect(() => load({ models: { medium: "glm-5.3" } })).not.toThrow();
+  expect(() => load({ models: { hard: 3 } })).toThrow("models.hard must be a model name");
   expect(() => load({ hard_tasks: "opus" })).toThrow("hard_tasks must be one of delegate, self, sonnet");
 });
 

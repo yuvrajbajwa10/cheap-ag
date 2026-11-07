@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { redact, type Provider } from "./credentials.js";
@@ -250,6 +250,8 @@ function runGroup(g: GroupRun) {
   let escTurn: AbortController | undefined; // the escalation attempt's own run, when it follows a turn-cap stop
   let stopped = undefined as Stop | undefined; // set from callbacks: keep TS from narrowing it to undefined
   let landing = false;
+  let mainBefore: string | undefined; // the main tree's fingerprint when an unsandboxed worker started
+  let landingsBefore = 0;
   const stop = (why: Stop) => {
     // a landing in progress finishes; a turn cap's last check may still be cut short by the clock or a cancel
     if (landing || (stopped && (stopped.cap !== "turns" || why.cap === "turns"))) return;
@@ -281,7 +283,9 @@ function runGroup(g: GroupRun) {
     const started = files.some((f) => !TEST_FILE.test(f) && !carried.has(f));
     const by = limits.repro_by_turns * scale * (started ? 2 : 1);
     if (session.totals().turns < by) return;
-    reproSeen = files.some((f) => TEST_FILE.test(f));
+    // a check that runs an existing test file already is the reproduction when that test fails today (a step that fixes failing tests)
+    const existing = cmds.some((c) => c.split(/\s+/).some((t) => TEST_FILE.test(t.replaceAll("\\", "/")) && existsSync(join(worktree!.path, t))));
+    reproSeen = existing || files.some((f) => TEST_FILE.test(f));
     if (!reproSeen) stop({ cap: "turns", reason: `no reproduction test by turn ${by}; ${started ? "the fix was started but never proven" : "the worker was still exploring"}` });
   };
   // the minute cap counts working time only: the clock is paused while the job waits BLOCKED on a reply
@@ -454,6 +458,9 @@ function runGroup(g: GroupRun) {
       startClock(); // queued time is not working time
       worktree = createWorktree(root, job, config.link_dirs);
       carried = new Set(dirty());
+      if (g.provider.provider === "antigravity") { // agy has no sandbox: a model that ignores its instructions can edit the main tree
+        try { mainBefore = mainFingerprint(root); landingsBefore = landings; } catch { /* no baseline: no guard */ }
+      }
       session = g.provider.provider === "antigravity"
         ? await openAgySession({
             directory: worktree.path,
@@ -602,6 +609,8 @@ function runGroup(g: GroupRun) {
         // a capped or cancelled job never lands; its worktree is kept
       } else if (result.error) {
         reason = `worker error: ${result.error}`;
+      } else if (mainBefore !== undefined && landings === landingsBefore && mainFingerprint(root) !== mainBefore) {
+        reason = "the worker edited the main working tree outside its worktree; nothing landed (its worktree is kept; review `git status` in the main tree)";
       } else if (!failing) { // a verify failure is explained by the error: and tried: sections, not a reason
         ({ repro, risk: reproRisk } = await checkRepro(worktree.path, report.repro, [...cmds, ...(config.test_cmd ? [config.test_cmd] : []), ...config.allow_commands], diff.changed.map((c) => c.path), kill.signal));
         // waiting for earlier groups to land is still cancellable; the clock is paused, since an earlier group may sit BLOCKED for long
@@ -614,6 +623,7 @@ function runGroup(g: GroupRun) {
           pauseClock();
           const clash = await land(root, job, diff.patch, diff.changed.map((c) => c.path));
           if (!clash) {
+            landings++;
             await releaseDirectory(worktree.path);
             removeWorktree(root, worktree);
           } else await redo(diff.patch, clash, work);
@@ -832,6 +842,15 @@ async function integrate(
 }
 
 /** Batches with a group still live in this server process, by id: how `jobs wait` and `reply` attach to them. */
+/** Landings so far: the main-tree guard stands down when another job landed while this one ran, since that changes the tree legitimately. */
+let landings = 0;
+
+/** What the main working tree holds right now (tracked diff + status), apart from .cheapag/; compared before and after a job to catch a worker that escaped its worktree. */
+export function mainFingerprint(root: string) {
+  const spec = ["--", ".", ":(exclude).cheapag"];
+  return createHash("sha1").update(git(root, ["status", "--porcelain", "-uall", ...spec])).update(" ").update(git(root, ["diff", "HEAD", ...spec])).digest("hex");
+}
+
 const batches = new Map<string, { look: (once: boolean, progress: Progress) => Promise<string>; render: () => string; forward: Progress }>();
 
 /** Why a job was stopped before it could finish: a cap, or `jobs cancel`. */

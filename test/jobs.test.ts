@@ -107,6 +107,25 @@ test("fail fast: a step with checks and no test file by repro_by_turns → FAIL 
   expect(fake.recorded.aborts).toHaveLength(1);
 });
 
+test("fail fast does not fire when a check runs an existing test file: that failing test is the reproduction", async () => {
+  const { repo, delegate } = await scenario({
+    doText: "fix the bug: hello should be 2",
+    doneWhen: "`node check.test.mjs` passes",
+    repoConfig: { limits: { repro_by_turns: 2, max_turns: 10 } },
+    scripts: [[
+      { tool: "read" }, { tool: "grep" }, { tool: "read" }, { tool: "grep" },
+      { edit: "src/hello.ts", content: "export const hello = 2;\n" }, { tool: "write" },
+      { finish: { summary: "fixed", risks: [], review: [], missing: [], repro: "n/a" } as never },
+    ]],
+  });
+  writeFileSync(join(repo.dir, "check.test.mjs"), CHECK);
+  repo.git("add", "check.test.mjs");
+  repo.git("commit", "-q", "-m", "failing test");
+  const text = await delegate();
+  expect(text).not.toContain("no reproduction test");
+  expect(text.split("\n")[0]).toMatch(/^OK /);
+});
+
 test("fail fast skips a feature step: no bug to reproduce, so no test is demanded", async () => {
   const { delegate } = await scenario({
     doText: "add a goodbye export",
