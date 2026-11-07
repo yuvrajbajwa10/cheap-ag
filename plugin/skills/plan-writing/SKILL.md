@@ -1,11 +1,11 @@
 ---
 name: plan-writing
-description: Write or fix a Cheap Agent plan file before calling the cheapag delegate tool. Use when planning a change of more than ~20 lines or several files for the cheap worker, splitting work into steps, or after delegate rejects a plan.
+description: Write or fix a Cheap Agent plan file before calling the cheapag delegate tool. Use when planning a change of more than ~20 lines or several files for the dedicated worker agent, splitting work into steps, or after delegate rejects a plan.
 ---
 
 # Writing a Cheap Agent plan
 
-The cheap worker sees the whole plan, then implements the steps you name in `delegate`. It works in an isolated copy of the repo and does only what a step says, so each step must stand on its own: exact files, what to build, and a check that proves it works.
+The dedicated worker agent sees the whole plan, then implements the steps you name in `delegate`. It works in an isolated copy of the repo and does only what a step says, so each step must stand on its own: exact files, what to build, and a check that proves it works.
 
 Save plans under `.plan/` in the repository, e.g. `.plan/rate-limit.md` (the developer may read, edit or commit them). Pass the path relative to the repository root.
 

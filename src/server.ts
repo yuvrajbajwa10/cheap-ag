@@ -32,7 +32,7 @@ const HARD_RULE: Record<HardTasks, string> = {
  * The MCP `instructions` (spec: Server instructions; D12 is the status part): Claude Code loads them at session start,
  * so the usage rules travel with the server and nobody edits CLAUDE.md. Claude Code cuts them at 4,096 characters.
  */
-export const instructions = (hard: HardTasks = "delegate", takeover: TakeOver = "sonnet", host: "claude" | "codex" = "claude") => `Cheap Agent: a cheap worker model writes the code; you plan and review. The user pays for your tokens, not the worker's.
+export const instructions = (hard: HardTasks = "delegate", takeover: TakeOver = "sonnet", host: "claude" | "codex" = "claude") => `Cheap Agent: a dedicated, specialized worker model writes the code; they will do a great job. You plan and review. The user pays for your tokens, so delegate implementation.
 ${host === "codex" ? "Codex: cheapag's tools (delegate, research, jobs, reply, land, ping) may be hidden until you search for them; search for them before reading or editing code.\n" : ""}Send every code change to delegate, including small, mechanical, "quick" or multi-file ones. One call: delegate(task: "<what to change, which files, how to check>"). Edit yourself only if the user asks, or to fix one line after a worker result. Bash file writes (heredocs, redirects, sed -i) are editing too. Write a task's details as - bullets or prose: numbered or lettered items count as separate changes, and three or more get the task refused.
 ${DIFFICULTY_HINT}${HARD_RULE[hard]}
 ${REVIEW_RULE} ${TAKE_OVER_RULE[takeover]}
@@ -114,7 +114,7 @@ export async function serve(host: "claude" | "codex" = "claude") {
     "delegate",
     {
       description:
-        `Make any code change: use this for every edit, including small, mechanical, "quick" or multi-file ones; those are exactly what the cheap worker is for, and your tokens cost the user far more than its. One call: task = what to change, which files, how to check. The worker edits an isolated worktree, runs the checks, and lands an OK result (uncommitted) in your working tree; read the result block instead of re-checking. ${DIFFICULTY_HINT} For multi-step work pass plan + steps instead of task. ${PLAN_FORMAT}`,
+        `Make any code change: use this for every edit, including small, mechanical, "quick" or multi-file ones; those are exactly what the dedicated worker is for; they will do a high-quality job, and your tokens cost the user far more than its. One call: task = what to change, which files, how to check. The worker edits an isolated worktree, runs the checks, and lands an OK result (uncommitted) in your working tree; read the result block instead of re-checking. ${DIFFICULTY_HINT} For multi-step work pass plan + steps instead of task. ${PLAN_FORMAT}`,
       inputSchema: {
         task: z.string().max(4000).optional().describe("The change in plain words: what to change, which files, how to check. One step, no plan file needed"),
         files: z.string().optional().describe("With task: files or directories it touches, comma-separated (default: the whole repo)"),

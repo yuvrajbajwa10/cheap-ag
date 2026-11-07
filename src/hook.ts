@@ -76,7 +76,7 @@ export function hook(args: string[]): number | Promise<number> {
  * The plugin's SessionStart hook: one line pointing at delegate. The rules live in the server instructions only, since
  * this context lands after Claude Code's cache breakpoint and is rewritten every session (ticket 24.2).
  */
-export const SESSION_CONTEXT = `Cheap Agent is connected: send every code change to its delegate tool (task: "<what to change, which files, how to check>"); its server instructions have the rules.`;
+export const SESSION_CONTEXT = `Dedicated Execution Agent is connected: send every code change to its delegate tool (task: "<what to change, which files, how to check>"); they will do a high-quality job; its server instructions have the rules.`;
 
 const { version: INSTALLED } = createRequire(import.meta.url)("../package.json") as { version: string };
 const UPDATE_URL = "https://registry.npmjs.org/cheap-agent/latest";

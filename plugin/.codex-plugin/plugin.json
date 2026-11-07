@@ -8,7 +8,7 @@
   "mcpServers": "./codex.mcp.json",
   "interface": {
     "displayName": "Cheap Agent",
-    "shortDescription": "A cheap model writes the code; Codex plans and reviews",
+    "shortDescription": "A dedicated worker model writes the code; Codex plans and reviews",
     "category": "Coding"
   }
 }
