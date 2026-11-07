@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
-import { isAbsolute, join, relative } from "node:path";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { redact, type Provider } from "./credentials.js";
 import { holdOpencode, type Opencode } from "./opencode.js";
 import { needsOf, overlap, parsePlan, PLAN_FORMAT, selectGroups, type Group, type Plan, type PlanStep } from "./plan.js";
@@ -13,7 +13,7 @@ import { checkAllows, envFailure, errorTail, runVerify, sameFailure, verifyComma
 import { openAgySession } from "./antigravity.js";
 import { finishReport, openSession, releaseDirectory, type FinishReport, type Question, type RunResult, type Session } from "./worker.js";
 import {
-  conflictPaths, createWorktree, git, hasCommits, jobWorktree, land, leftoverMarkers, operationInProgress, projectRoot, reapply, removeWorktree, withLock, worktreeDiff,
+  conflictPaths, createWorktree, findRepoForPath, findSubRepositories, git, hasCommits, jobWorktree, land, leftoverMarkers, operationInProgress, projectRoot, reapply, removeWorktree, resolveProjectRoots, withLock, worktreeDiff,
   type Changed, type Worktree,
 } from "./workspace.js";
 import { isAlive, normalisePath } from "./platform.js";
@@ -55,11 +55,17 @@ const MAX_BRIEF = 6_000;
 const MAX_SOURCE = 8000;
 
 /** `source=`: the text itself, or a repo-relative file holding it (the benchmark writes the issue to one; a user may point at a ticket export). */
+function withinRepo(root: string, abs: string): boolean {
+  const rel = relative(root, abs);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
 function resolveSource(root: string, source: string | undefined): string | undefined {
   const value = source?.trim();
   if (!value) return undefined;
+  // a file is read only from inside the target repo, never from the process cwd or outside the repo
   const file = join(root, value);
-  const text = !value.includes("\n") && value.length < 512 && !isAbsolute(value) && existsSync(file) ? readFileSync(file, "utf8").trim() : value;
+  const text = !value.includes("\n") && value.length < 512 && !isAbsolute(value) && withinRepo(root, file) && existsSync(file) ? readFileSync(file, "utf8").trim() : value;
   return text.length > MAX_SOURCE ? `${text.slice(0, MAX_SOURCE)}\n[… cut at ${MAX_SOURCE} characters]` : text;
 }
 
@@ -95,8 +101,87 @@ function inlinePlan(root: string, req: DelegateRequest): { plan: string } | { fa
 /** What a tool call that may start workers gets from the server. */
 export type WorkerContext = { provider: Provider; opencode?: (route: Route) => Promise<Opencode>; progress: Progress };
 
+/** A case-insensitive whole-name match for a repo name: escaped, and bounded by non-word characters so names like `c++`, `app(1)`, `-x-` work. */
+export function repoNamePattern(name: string): RegExp {
+  return new RegExp(`(?<![A-Za-z0-9_])${name.replace(/[.*+?^${}()|[\]\\/-]/g, "\\$&")}(?![A-Za-z0-9_])`, "i");
+}
+
+/** The sub-repository that holds a job (jXXXX) or batch (bXXXX) id, or undefined. */
+export function locateIdRoot(cwd: string, id: string): string | undefined {
+  const rel = /^b[0-9a-z]{4}$/.test(id) ? join(".cheapag", "batches", `${id}.json`) : /^j[0-9a-z]{4}$/.test(id) ? join(".cheapag", "jobs", id) : undefined;
+  if (!rel) return undefined;
+  return findSubRepositories(cwd).find((r) => existsSync(join(r, rel)));
+}
+
+/**
+ * Resolves the target repository for a delegate request:
+ * if cwd is a git repo, returns it; otherwise, discovers subfolder repositories and matches against files/plan/task.
+ */
+function targetRepository(cwd: string, req: DelegateRequest): { root: string; req: DelegateRequest } | { fail: string } {
+  let root: string;
+  try {
+    root = projectRoot(cwd);
+    return { root, req };
+  } catch {
+    const sub = findSubRepositories(cwd);
+    if (!sub.length) {
+      return { fail: `${cwd} is not inside a git repository, and no git repositories were found in subfolders` };
+    }
+    if (sub.length === 1) {
+      root = sub[0];
+    } else {
+      let matched: string | undefined;
+      if (req.files) {
+        const files = req.files.split(/[,\n]/).map((f) => f.trim()).filter(Boolean);
+        matched = sub.find((r) => files.some((f) => {
+          const abs = resolve(cwd, f);
+          return abs === r || abs.startsWith(r + sep);
+        }));
+      }
+      if (!matched && req.plan) {
+        const abs = resolve(cwd, req.plan);
+        matched = sub.find((r) => abs === r || abs.startsWith(r + sep));
+      }
+      if (!matched && req.task) {
+        const byName = sub.filter((r) => repoNamePattern(basename(r)).test(req.task!));
+        if (byName.length === 1) matched = byName[0];
+      }
+      if (!matched) {
+        return {
+          fail: `Multiple git repositories found (${sub.map((s) => relative(cwd, s)).join(", ")}); specify files or plan in one of them to target it`,
+        };
+      }
+      root = matched;
+    }
+
+    const adjustPath = (p: string) => {
+      const abs = resolve(cwd, p);
+      if (abs === root || abs.startsWith(root + sep)) {
+        return relative(root, abs);
+      }
+      return p;
+    };
+
+    if (req.plan && !withinRepo(root, resolve(cwd, req.plan)) && !withinRepo(root, resolve(root, req.plan))) {
+      return { fail: `plan ${req.plan} is outside the target repository ${root}` };
+    }
+    let adjustedReq = { ...req };
+    if (req.files) {
+      const files = req.files.split(/[,\n]/).map((f) => f.trim()).filter(Boolean);
+      adjustedReq.files = files.map(adjustPath).join(", ");
+    }
+    if (req.plan) {
+      adjustedReq.plan = adjustPath(req.plan);
+    }
+    return { root, req: adjustedReq };
+  }
+}
+
 export async function delegate(req: DelegateRequest, ctx: WorkerContext): Promise<string> {
-  const root = projectRoot(process.cwd());
+  const target = targetRepository(process.cwd(), req);
+  if ("fail" in target) return failBlock(target.fail);
+  const { root } = target;
+  req = target.req;
   // first: an unapproved repo gets CONSENT before any job, worktree, OpenCode boot or provider call
   const gate = consentGate(root, ctx.provider.provider);
   if ("block" in gate) return gate.block;
@@ -918,13 +1003,23 @@ export type JobsInput = { action: "list" | "show" | "wait" | "cancel"; job?: str
 
 /** The `jobs` tool: list jobs, show one's last block again, wait for a job's or batch's next settlement, or cancel a running job. */
 export async function jobs(input: JobsInput, progress: Progress = () => {}): Promise<string> {
-  const root = projectRoot(process.cwd());
   if (input.action === "list") {
-    const all = records(root).sort((a, b) => String(b.timing?.startedAt ?? "").localeCompare(String(a.timing?.startedAt ?? "")));
+    const roots = resolveProjectRoots(process.cwd());
+    const all = roots.flatMap((r) => records(r)).sort((a, b) => String(b.timing?.startedAt ?? "").localeCompare(String(a.timing?.startedAt ?? "")));
     if (!all.length) return "no jobs yet";
     const lines = all.slice(0, LIST_MAX).map((r) => renderJob(r).split("\n")[0] + blockedFor(r));
     if (all.length > LIST_MAX) lines.push(`… +${all.length - LIST_MAX} older`);
     return lines.join("\n");
+  }
+  let root: string;
+  try {
+    root = projectRoot(process.cwd());
+  } catch {
+    const sub = findSubRepositories(process.cwd());
+    const found = input.job ? locateIdRoot(process.cwd(), input.job) : undefined;
+    if (found) root = found;
+    else if (input.job && /^[jb][0-9a-z]{4}$/.test(input.job)) return failBlock(`${input.job.startsWith("b") ? "batch" : "job"} ${input.job} not found in any repository under ${process.cwd()}`);
+    else root = sub[0] ?? process.cwd();
   }
   if (input.action === "wait" && input.job && /^b[0-9a-z]{4}$/.test(input.job)) return waitBatch(root, input.job, progress, input.seconds);
   // the id becomes a path: only well-formed ids get that far
@@ -1050,20 +1145,22 @@ export function records(root: string) {
  * becomes CANCELLED with `reason: server restart`; its worktree is kept.
  */
 export function recoverJobs(cwd: string) {
-  let root: string;
+  let roots: string[];
   try {
-    root = projectRoot(cwd);
+    roots = [projectRoot(cwd)];
   } catch {
-    return; // not a repository: no jobs
+    roots = findSubRepositories(cwd);
   }
-  for (const { dir, ...record } of records(root)) {
-    if (record.status !== "RUNNING" && record.status !== "BLOCKED") continue;
-    // our own pid can only be a reused one: whoever wrote it is gone
-    if (record.pid && record.pid !== process.pid && isAlive(record.pid)) continue;
-    const cancelled = { ...record, status: "CANCELLED" as const, landed: false, reason: "server restart" };
-    const text = renderJob(cancelled);
-    writeWhole(join(dir, "result.json"), redact(JSON.stringify({ ...cancelled, blockTokensApprox: Math.ceil(text.length / 4) }, null, 2) + "\n"));
-    writeWhole(join(dir, "result.txt"), redact(text + "\n"));
+  for (const root of roots) {
+    for (const { dir, ...record } of records(root)) {
+      if (record.status !== "RUNNING" && record.status !== "BLOCKED") continue;
+      // our own pid can only be a reused one: whoever wrote it is gone
+      if (record.pid && record.pid !== process.pid && isAlive(record.pid)) continue;
+      const cancelled = { ...record, status: "CANCELLED" as const, landed: false, reason: "server restart" };
+      const text = renderJob(cancelled);
+      writeWhole(join(dir, "result.json"), redact(JSON.stringify({ ...cancelled, blockTokensApprox: Math.ceil(text.length / 4) }, null, 2) + "\n"));
+      writeWhole(join(dir, "result.txt"), redact(text + "\n"));
+    }
   }
 }
 
@@ -1081,9 +1178,22 @@ export type LandInput = { job: string; action: "apply" | "discard" };
  * per job. Records are updated (`landed`, `worktree`, `discarded`) so research's unlanded note and cleanup stay truthful.
  */
 export async function landJobs(input: LandInput, ctx: WorkerContext): Promise<string> {
-  const root = projectRoot(process.cwd());
   const ids = input.job.split(",").map((s) => s.trim()).filter(Boolean);
   if (!ids.length) return failBlock('land needs a job id, or several in landing order, e.g. "j7f3a,j7f3b"');
+  let root: string;
+  try {
+    root = projectRoot(process.cwd());
+  } catch {
+    const sub = findSubRepositories(process.cwd());
+    const roots = new Set<string>();
+    for (const id of ids) {
+      const found = locateIdRoot(process.cwd(), id);
+      if (!found) return failBlock(`no job ${id} found in any repository`);
+      roots.add(found);
+    }
+    if (roots.size > 1) return failBlock(`jobs ${ids.join(",")} span several repositories (${[...roots].join(", ")}); land each repository's jobs in a separate call`);
+    root = [...roots][0];
+  }
   let config: Config;
   try {
     config = loadConfig(root);
@@ -1244,7 +1354,14 @@ function answerEach(answer: string, questions: Question[]): string[] | string {
 
 /** Why `job` cannot take a reply, from its record on disk. */
 function notWaiting(job: string) {
-  const file = join(projectRoot(process.cwd()), ".cheapag", "jobs", job, "result.json");
+  let root: string;
+  try {
+    root = projectRoot(process.cwd());
+  } catch {
+    const sub = findSubRepositories(process.cwd());
+    root = sub.find((r) => existsSync(join(r, ".cheapag", "jobs", job))) ?? process.cwd();
+  }
+  const file = join(root, ".cheapag", "jobs", job, "result.json");
   if (!/^j[0-9a-z]{4}$/.test(job) || !existsSync(file)) return `no job ${job}; reply only to a BLOCKED job's id`;
   const { status } = JSON.parse(readFileSync(file, "utf8")) as { status: string };
   return status === "BLOCKED"

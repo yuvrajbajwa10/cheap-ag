@@ -2,9 +2,9 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { createRequire } from "node:module";
 import { dirname, join, resolve, sep } from "node:path";
 import { loadConfig, userConfigFile } from "./config.js";
-import { projectRoot } from "./workspace.js";
+import { findRepoForPath, findSubRepositories, NotGitRepoError, projectRoot } from "./workspace.js";
 
-const USAGE = "usage: cheapag hook [on | off]";
+const USAGE = "usage: cheapag hook [on | off] [--repo <path>]";
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "apply_patch", "Bash"]);
 // Bash forms that write a file: redirects and heredocs into a path, in-place sed/perl, tee, cp/mv targets, and
 // python/node one-liners that open files for writing. The benchmark showed Claude writing whole files this way.
@@ -34,41 +34,78 @@ const READ_PARTS = ["git diff", "git log", "git show", "git status", "cat", "hea
 /** Presence of this file under `.cheapag/` turns the guard on for the repo; it ships off (spec A6). */
 const flag = (root: string) => join(root, ".cheapag", "hook.json");
 
+const safeProjectRoot = (dir: string) => {
+  try {
+    return projectRoot(dir);
+  } catch {
+    return undefined;
+  }
+};
+
 /**
  * `cheapag hook [on|off]`: the user-only `/cheapag:hook` toggles the edit guard for the current repo; no argument
  * shows its state. `cheapag hook guard` is the plugin's PreToolUse hook (spec E6); `cheapag hook result` its PostToolUse
  * hook on cheapag's own tools, which starts the take-over budget (ticket 29).
  */
-export function hook(args: string[]): number | Promise<number> {
+export function hook(argv: string[]): number | Promise<number> {
+  let args = argv;
   if (args.length === 1 && args[0] === "guard") return guard();
   if (args.length === 1 && args[0] === "context") return context();
   if (args.length === 2 && args[0] === "context" && args[1] === "codex") return context("codex");
   if (args.length === 1 && args[0] === "result") return result();
   const out = (line: string) => process.stdout.write(line + "\n");
-  if (args.length > 1 || (args.length && args[0] !== "on" && args[0] !== "off")) {
+  let repoArg: string | undefined;
+  const rest = [...args];
+  const at = rest.indexOf("--repo");
+  if (at >= 0) {
+    repoArg = rest[at + 1];
+    if (!repoArg || repoArg.startsWith("--")) {
+      out(`✗ ${USAGE}`);
+      return 1;
+    }
+    rest.splice(at, 2);
+  }
+  if (rest.length > 1 || (rest.length && rest[0] !== "on" && rest[0] !== "off")) {
     out(`✗ ${USAGE}`);
     return 1;
   }
-  let root: string;
+  args = rest;
+  let roots: string[];
   try {
-    root = projectRoot(process.cwd());
+    roots = [projectRoot(repoArg ? resolve(repoArg) : process.cwd())];
   } catch (err) {
-    out(`✗ ${(err as Error).message}`);
-    return 1;
+    if (!(err instanceof NotGitRepoError)) {
+      out(`✗ ${(err as Error).message}`);
+      return 1;
+    }
+    roots = repoArg ? [] : findSubRepositories(process.cwd());
+    if (!roots.length) {
+      out(`✗ ${err.message}`);
+      return 1;
+    }
+    // turning the guard on writes into each repo, so it needs an explicit choice; off and status only list/remove
+    if (args[0] === "on") {
+      out(`✗ ${process.cwd()} is not inside a git repository. Found ${roots.length} in subfolders; nothing was changed. Pick one with: cheapag hook on --repo <path>`);
+      for (const r of roots) out(`  ${r}`);
+      return 1;
+    }
   }
-  if (args[0] === "on") {
-    mkdirSync(join(root, ".cheapag"), { recursive: true });
-    writeFileSync(flag(root), JSON.stringify({ on: true }) + "\n");
-  } else if (args[0] === "off") rmSync(flag(root), { force: true });
-  let lines: number | string;
-  try {
-    lines = loadConfig(root).guard_lines;
-  } catch (err) {
-    lines = `? (${(err as Error).message})`;
+  for (const root of roots) {
+    if (roots.length > 1) out(`repo: ${root}`);
+    if (args[0] === "on") {
+      mkdirSync(join(root, ".cheapag"), { recursive: true });
+      writeFileSync(flag(root), JSON.stringify({ on: true }) + "\n");
+    } else if (args[0] === "off") rmSync(flag(root), { force: true });
+    let lines: number | string;
+    try {
+      lines = loadConfig(root).guard_lines;
+    } catch (err) {
+      lines = `? (${(err as Error).message})`;
+    }
+    out(existsSync(flag(root))
+      ? `✓ edit guard on for ${root}: an edit over ${lines} changed lines, a 3rd edit to one file in a turn, or a Bash command writing a file is denied with a pointer to delegate (.plan/ is exempt). CHEAPAG_ALLOW_EDITS=1 bypasses it.`
+      : `✓ edit guard off for ${root}: Claude's edits are not limited.`);
   }
-  out(existsSync(flag(root))
-    ? `✓ edit guard on for ${root}: an edit over ${lines} changed lines, a 3rd edit to one file in a turn, or a Bash command writing a file is denied with a pointer to delegate (.plan/ is exempt). CHEAPAG_ALLOW_EDITS=1 bypasses it.`
-    : `✓ edit guard off for ${root}: Claude's edits are not limited.`);
   return 0;
 }
 
@@ -201,6 +238,8 @@ type PromptState = { prompt: string; calls: number; notDone?: boolean; okPassed?
 
 /** Per-session state; the repo-wide marker lets the plugin's shell test skip node until a cheapag result was ever seen. */
 const stateFile = (root: string, session: string) => join(root, ".cheapag", "hook", `${session.replace(/[^\w-]/g, "_")}.takeover.json`);
+/** Where the take-over state is kept: the cwd's repo, or the cwd itself when it is not in one (a workspace of sub-repos). */
+const stateRoot = (cwd: string) => safeProjectRoot(cwd) ?? cwd;
 const marker = (root: string) => join(root, ".cheapag", "hook", "takeover");
 
 /**
@@ -212,14 +251,24 @@ const marker = (root: string) => join(root, ".cheapag", "hook", "takeover");
  */
 function budget(input: Input): string | undefined {
   if (!input.session_id || !input.prompt_id || input.agent_id || typeof input.cwd !== "string" || CHEAPAG_TOOL.test(input.tool_name ?? "")) return;
-  const root = projectRoot(input.cwd);
-  const file = stateFile(root, input.session_id);
-  let state: PromptState;
-  try {
-    state = JSON.parse(readFileSync(file, "utf8"));
-  } catch {
-    return; // no cheapag result in this session yet
+  const tool = input.tool_input ?? {};
+  const targetFile = typeof tool.file_path === "string" ? tool.file_path : undefined;
+  // state lives where result() wrote it: the cwd's repo, or the cwd itself when it is no repo; the target's own repo is tried first
+  const targetRoot = targetFile ? findRepoForPath(targetFile, input.cwd) : undefined;
+  let root = "", file = "";
+  let state: PromptState | undefined;
+  for (const candidate of new Set([targetRoot, stateRoot(input.cwd)])) {
+    if (!candidate) continue;
+    try {
+      state = JSON.parse(readFileSync(stateFile(candidate, input.session_id), "utf8"));
+      root = candidate;
+      file = stateFile(candidate, input.session_id);
+      break;
+    } catch {
+      // no state here
+    }
   }
+  if (!state) return; // no cheapag result in this session yet
   if (state.prompt !== input.prompt_id) return; // a new user prompt starts fresh
   const config = loadConfig(root);
   if (state.notDone && config.takeover === "sonnet") {
@@ -257,7 +306,7 @@ function result(): number {
     // the worker's own `land applied` finished the block: drop the take-over even when the check never ran
     const cleared = /^OK j\w+ (applied|discarded)\b/m.test(out);
     if (!notDone && !okPassed && !cleared) return 0;
-    const root = projectRoot(input.cwd);
+    const root = stateRoot(input.cwd);
     const file = stateFile(root, input.session_id);
     let state: PromptState = { prompt: input.prompt_id, calls: 0 };
     try {
@@ -294,8 +343,8 @@ function check(input: Input): string | undefined {
   if (input.tool_name === "Bash") return typeof tool.command === "string" ? bashCheck(input.cwd, tool.command) : undefined;
   if (input.tool_name === "apply_patch") return typeof tool.command === "string" ? patchCheck(input.cwd, tool.command, input) : undefined;
   if (typeof tool.file_path !== "string") return;
-  const root = projectRoot(input.cwd);
-  if (!existsSync(flag(root))) return;
+  const root = findRepoForPath(tool.file_path, input.cwd) ?? safeProjectRoot(input.cwd);
+  if (!root || !existsSync(flag(root))) return;
   const file = resolve(input.cwd, tool.file_path);
   if (isPlan(root, file)) return; // Claude must be able to write plans of any size
   const limit = loadConfig(root).guard_lines;
@@ -360,25 +409,35 @@ function patchEdits(patch: string): { path: string; lines: number }[] {
   return edits;
 }
 
-/** Each file in a Codex patch goes through the Edit/Write rules; a malformed patch yields no files and is allowed. */
+/**
+ * Each file in a Codex patch goes through the Edit/Write rules of its own repo; a malformed patch yields no files and is
+ * allowed. Any file in a guarded repo that breaks a rule denies the whole patch.
+ */
 function patchCheck(cwd: string, patch: string, input: Input): string | undefined {
-  const root = projectRoot(cwd);
-  if (!existsSync(flag(root))) return;
   const edits = patchEdits(patch);
   if (!edits.length) return;
-  const limit = loadConfig(root).guard_lines;
-  const state = turnState(input, root);
+  const cwdRoot = safeProjectRoot(cwd);
   // a denied patch is not applied, so none of its files count until every one of them passes
-  const counts = state && { ...state.turn.edits };
+  const pending = new Map<string, { state: { turn: Turn; file: string } | undefined; counts: Record<string, number> | undefined }>();
   for (const edit of edits) {
+    const root = (edit.path ? findRepoForPath(edit.path, cwd) : undefined) ?? cwdRoot;
+    if (!root || !existsSync(flag(root))) continue;
     const file = resolve(cwd, edit.path);
     if (isPlan(root, file)) continue;
-    const reason = editRules(counts, edit.path, file, edit.lines, limit);
+    let entry = pending.get(root);
+    if (!entry) {
+      const state = turnState(input, root);
+      entry = { state, counts: state && { ...state.turn.edits } };
+      pending.set(root, entry);
+    }
+    const reason = editRules(entry.counts, edit.path, file, edit.lines, loadConfig(root).guard_lines);
     if (reason) return reason;
   }
-  if (state && counts) {
-    state.turn.edits = counts;
-    saveTurn(root, state);
+  for (const [root, { state, counts }] of pending) {
+    if (state && counts) {
+      state.turn.edits = counts;
+      saveTurn(root, state);
+    }
   }
 }
 
@@ -420,14 +479,24 @@ function outside(root: string, cwd: string, tool: Record<string, unknown> | unde
   return abs !== root && !abs.startsWith(root + sep);
 }
 
-/** A Bash command is denied when it writes a file inside the repo (any size: the lines can't be counted), unless the file is a plan. */
-function bashCheck(cwd: string, command: string): string | undefined {  const root = projectRoot(cwd);
-  if (!existsSync(flag(root))) return;
+/**
+ * A Bash command is denied when it writes a file inside a guarded repo (any size: the lines can't be counted), unless the
+ * file is a plan. Every write target is checked against its own repo; targets without a repo use the cwd's.
+ */
+function bashCheck(cwd: string, command: string): string | undefined {
   const targets: string[] = [];
   for (const re of BASH_WRITES) for (const m of command.matchAll(re)) if (m.groups?.path) targets.push(m.groups.path);
-  const inRepo = (p: string) => { const abs = resolve(cwd, p); return abs.startsWith(root + sep) && !isPlan(root, abs); };
-  const written = targets.filter((p) => p !== "/dev/null" && inRepo(p));
-  if (written.length) return `Bash writing ${written[0]}: ${REDIRECT}`;
+  const cwdRoot = safeProjectRoot(cwd);
+  for (const p of targets) {
+    if (p === "/dev/null") continue;
+    const root = findRepoForPath(p, cwd) ?? cwdRoot;
+    if (!root || !existsSync(flag(root))) continue;
+    const abs = resolve(cwd, p);
+    if (abs.startsWith(root + sep) && !isPlan(root, abs)) return `Bash writing ${p}: ${REDIRECT}`;
+  }
+  // in-place and code writes name no target, so any guarded repo the command could reach (the cwd's, or the sub-repos of a plain workspace folder) applies
+  const roots = cwdRoot ? [cwdRoot] : findSubRepositories(cwd);
+  if (!roots.some((r) => existsSync(flag(r)))) return;
   if (BASH_INPLACE.test(command)) return `Bash in-place edit (sed/perl -i): ${REDIRECT}`;
   if (BASH_CODE_WRITES.test(command)) return `Bash running code that writes files: ${REDIRECT}`;
 }

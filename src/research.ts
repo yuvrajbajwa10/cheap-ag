@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { isAbsolute, basename, join, relative } from "node:path";
+import { isAbsolute, basename, join, relative, resolve, sep } from "node:path";
 import { loadConfig, type Config } from "./config.js";
 import { consentGate } from "./consent.js";
 import { redact, type Provider } from "./credentials.js";
@@ -12,7 +12,7 @@ import { failBlock, renderResearch, type ResearchRecord } from "./report.js";
 import { chain, modelName, recordSpend, runRouted, type Route } from "./routing.js";
 import { openAgySession } from "./antigravity.js";
 import { openSession, releaseDirectory, type Session } from "./worker.js";
-import { createWorktree, git, hasCommits, projectRoot, removeWorktree, type Worktree } from "./workspace.js";
+import { createWorktree, findSubRepositories, git, hasCommits, projectRoot, removeWorktree, type Worktree } from "./workspace.js";
 import { checkAllows } from "./verify.js";
 
 /**
@@ -36,13 +36,40 @@ export async function research(
   input: ResearchInput,
   ctx: { provider: Provider; opencode?: (route: Route) => Promise<Opencode>; progress: (turns: number, message: string) => void },
 ): Promise<string> {
-  const root = projectRoot(process.cwd());
+  let root: string;
+  let paths = input.paths;
+  try {
+    root = projectRoot(process.cwd());
+  } catch {
+    const sub = findSubRepositories(process.cwd());
+    if (!sub.length) return failBlock(`${process.cwd()} is not inside a git repository, and no git repositories were found in subfolders`);
+    if (sub.length === 1) {
+      root = sub[0];
+    } else {
+      let matched: string | undefined;
+      if (paths) {
+        const fileList = paths.split(",").map((p) => p.trim()).filter(Boolean);
+        matched = sub.find((r) => fileList.some((f) => {
+          const abs = resolve(process.cwd(), f);
+          return abs === r || abs.startsWith(r + sep);
+        }));
+      }
+      if (!matched) return failBlock(`Multiple git repositories found (${sub.map((s) => relative(process.cwd(), s)).join(", ")}); specify paths in one of them`);
+      root = matched;
+    }
+    if (paths) {
+      paths = paths.split(",").map((p) => {
+        const abs = resolve(process.cwd(), p.trim());
+        return (abs === root || abs.startsWith(root + sep)) ? relative(root, abs) : p.trim();
+      }).join(", ");
+    }
+  }
   // first: an unapproved repo gets CONSENT before any record, OpenCode boot or provider call
   const gate = consentGate(root, ctx.provider.provider);
   if ("block" in gate) return gate.block;
   const scope: string[] = [];
   const resolvedPaths: string[] = [];
-  for (const path of (input.paths ?? "").split(",").map((p) => p.trim()).filter(Boolean)) {
+  for (const path of (paths ?? "").split(",").map((p) => p.trim()).filter(Boolean)) {
     const rel = normalisePath(relative(root, join(root, path)));
     if (isAbsolute(path) || rel === ".." || rel.startsWith("../")) return failBlock(`path ${path} must be inside the repository, relative to its root`);
     if (existsSync(join(root, path))) {

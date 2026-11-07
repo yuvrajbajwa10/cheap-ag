@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, onTestFinished, test } from "vitest";
 import { SESSION_CONTEXT } from "../src/hook.js";
@@ -333,3 +333,68 @@ test("trust OK: after an OK whose checks passed, re-running tests is denied; oth
   result(FAIL_BLOCK, "p2");
   expect(run("Edit", { file_path: "a.ts", old_string: "a", new_string: "b" }, { prompt: "p2" })).toMatch(/^The worker did not finish/);
 }, slow(20_000));
+
+/** A plain folder holding two git repos (a, b), with the guard on in `guarded`; the hook is called directly since the plugin's shell test needs a git cwd. */
+function workspace(guarded: ("a" | "b")[], cwdRepo?: "a" | "b") {
+  const { home, env } = hermeticHome();
+  onTestFinished(() => rmSync(home, { recursive: true, force: true }));
+  const ws = join(home, "ws");
+  let repos: { a: string; b: string };
+  if (cwdRepo) {
+    const a = tempRepo(), b = tempRepo();
+    onTestFinished(a.cleanup);
+    onTestFinished(b.cleanup);
+    repos = { a: a.dir, b: b.dir };
+  } else {
+    repos = { a: join(ws, "a"), b: join(ws, "b") };
+    for (const dir of Object.values(repos)) {
+      mkdirSync(dir, { recursive: true });
+      execFileSync("git", ["init", "-q"], { cwd: dir });
+    }
+  }
+  for (const g of guarded) {
+    mkdirSync(join(repos[g], ".cheapag"), { recursive: true });
+    writeFileSync(join(repos[g], ".cheapag", "hook.json"), '{"on":true}\n');
+  }
+  const cwd = cwdRepo ? repos[cwdRepo] : ws;
+  const call = (sub: "guard" | "result", input: Record<string, unknown>) =>
+    execFileSync(process.execPath, [serverEntry, "hook", sub], { cwd, env, input: JSON.stringify({ session_id: "s1", prompt_id: "p1", cwd, ...input }), encoding: "utf8" });
+  const guard = (tool_name: string, tool_input: Record<string, unknown>) => {
+    const out = call("guard", { tool_name, tool_input });
+    return out ? (JSON.parse(out).hookSpecificOutput.permissionDecisionReason as string) : null;
+  };
+  return { repos, cwd, guard, call };
+}
+
+test("guard: every Bash write target is checked against its own repo", () => {
+  const { repos, guard } = workspace(["b"], "a"); // cwd is in the unguarded repo a
+  expect(guard("Bash", { command: `echo x > ${join(repos.a, "f.ts")}` })).toBeNull();
+  expect(guard("Bash", { command: `echo x > ${join(repos.a, "f.ts")} && echo y > ${join(repos.b, "g.ts")}` })).toMatch(/^Bash writing .*g\.ts/);
+  expect(guard("Bash", { command: `echo x > ${join(repos.b, ".plan", "p.md")}` })).toBeNull();
+});
+
+test("guard: a multi-file apply_patch is denied when any file is in a guarded repo", () => {
+  const { repos, guard } = workspace(["b"], "a");
+  const patch = applyPatch(updateFile(join(repos.a, "x.ts"), 1, 1), updateFile(join(repos.b, "y.ts"), 30, 30));
+  expect(guard("apply_patch", { command: patch })).toMatch(/Large edit/);
+  expect(guard("apply_patch", { command: applyPatch(updateFile(join(repos.a, "x.ts"), 30, 30)) })).toBeNull();
+});
+
+test("guard: in a plain folder of repos, sed -i and code writes are denied if a sub-repo is guarded", () => {
+  const { guard } = workspace(["b"]);
+  expect(guard("Bash", { command: "sed -i 's/a/b/' b/src/x.ts" })).toMatch(/in-place edit/);
+  expect(guard("Bash", { command: "ls" })).toBeNull();
+  const none = workspace([]);
+  expect(none.guard("Bash", { command: "sed -i 's/a/b/' b/src/x.ts" })).toBeNull();
+});
+
+test("takeover: state is kept at the cwd when it is not a repo, not in the first sub-repo", () => {
+  const { repos, cwd, guard, call } = workspace(["a", "b"]);
+  call("result", { tool_name: "mcp__cheapag__delegate", tool_input: {}, tool_response: [{ type: "text", text: FAIL_BLOCK }] });
+  expect(existsSync(join(cwd, ".cheapag", "hook", "s1.takeover.json"))).toBe(true);
+  expect(existsSync(join(repos.a, ".cheapag", "hook"))).toBe(false);
+  expect(existsSync(join(repos.b, ".cheapag", "hook"))).toBe(false);
+  expect(guard("Edit", { file_path: join(repos.b, "f.ts"), old_string: "a", new_string: "b" })).toMatch(/^The worker did not finish/);
+  expect(guard("Write", { file_path: join(cwd, "notes.md"), content: "x" })).toMatch(/^The worker did not finish/);
+  expect(guard("Read", { file_path: join(repos.b, "f.ts") })).toBeNull();
+});

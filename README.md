@@ -176,6 +176,8 @@ Native Windows support (36 files, +753/−278 lines) was built with Cheap Agent.
 | `/cheapag:hook on` | `$cheapag:hook on` | No more "I'll just do it myself": your frontier model *must* hand code changes to the dedicated worker model. |
 | `/cheapag:clean` | `$cheapag:clean` | Tidy up old job folders. |
 
+Run from a folder that holds several repos rather than being one, `allow` and `hook on` list the repos they found, change nothing and exit 1 until you name one with `--repo <path>` (for example `/cheapag:allow --repo ./api`). `hook off` and a bare `hook` (status) still cover every repo in the folder.
+
 While a job runs, Claude Code shows the worker's latest step under the tool call, and Codex shows it each time it checks in (about every 15 seconds). To follow every step in a second terminal, run `npx cheap-agent watch`.
 
 ## Settings

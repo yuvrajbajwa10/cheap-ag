@@ -1,8 +1,9 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, onTestFinished, test } from "vitest";
+import { findRepoForPath, findSubRepositories } from "../src/workspace.js";
 import { startFakeOpencode, type Action } from "./fake-opencode.js";
 import { callText, removeDir, startServer, tempRepo } from "./harness.js";
 
@@ -246,4 +247,66 @@ test("a repository with no commits yet is refused before any job starts", async 
   expect(text).toBe('FAIL reason: this repository has no commits yet, and Cheap Agent starts each job from the last commit. Make a first commit, then delegate again: git add -A && git commit -m "start"');
   expect(fake.recorded.sessions).toEqual([]);
   expect(existsSync(join(dir, ".cheapag", "jobs"))).toBe(false);
+});
+
+test("findSubRepositories and findRepoForPath locate sub-repositories and their containing roots", () => {
+  const parent = realpathSync.native(mkdtempSync(join(tmpdir(), "parent-workspace-")));
+  onTestFinished(() => removeDir(parent));
+  const subRepoA = join(parent, "repoA");
+  const subRepoB = join(parent, "repoB");
+  const nonRepo = join(parent, "docs");
+  mkdirSync(join(subRepoA, ".git"), { recursive: true });
+  mkdirSync(join(subRepoB, ".git"), { recursive: true });
+  mkdirSync(nonRepo, { recursive: true });
+  mkdirSync(join(subRepoA, "src", "nested"), { recursive: true });
+
+  const found = findSubRepositories(parent);
+  expect(found).toHaveLength(2);
+  expect(found).toContain(subRepoA);
+  expect(found).toContain(subRepoB);
+
+  expect(findRepoForPath(join(subRepoA, "src", "nested", "file.ts"))).toBe(subRepoA);
+  expect(findRepoForPath(join(nonRepo, "readme.md"))).toBeUndefined();
+});
+
+test("findSubRepositories skips symlinks and a .git symlink, so repos outside the workspace are never picked up", () => {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "parent-workspace-")));
+  onTestFinished(() => removeDir(root));
+  const parent = join(root, "workspace");
+  const outside = join(root, "outside-repo");
+  mkdirSync(join(outside, ".git"), { recursive: true });
+  mkdirSync(join(parent, "real", ".git"), { recursive: true });
+  mkdirSync(join(parent, "fake-git"), { recursive: true });
+  mkdirSync(join(root, "elsewhere"), { recursive: true });
+  try {
+    symlinkSync(outside, join(parent, "linked"), "junction");
+    symlinkSync(join(root, "elsewhere"), join(parent, "fake-git", ".git"), "junction");
+  } catch {
+    return; // symlinks not permitted here
+  }
+  expect(findSubRepositories(parent)).toEqual([join(parent, "real")]);
+});
+
+test("server running in non-git parent folder delegates to subfolder repository", async () => {
+  const parent = realpathSync.native(mkdtempSync(join(tmpdir(), "parent-workspace-")));
+  onTestFinished(() => removeDir(parent));
+  const repo = tempRepo();
+  onTestFinished(repo.cleanup);
+  const sub = join(parent, "my-app");
+  execFileSync("git", ["clone", repo.dir, sub], { stdio: "ignore" });
+
+  mkdirSync(join(sub, ".plan"), { recursive: true });
+  writeFileSync(join(sub, ".plan", "p.md"), plan("out.txt exists"));
+
+  const fake = await startFakeOpencode();
+  onTestFinished(fake.close);
+  fake.script({ edit: "src/out.txt", content: "out\n" }, { tool: "write" }, { finish: REPORT });
+
+  const server = await startServer({ cwd: parent, env: { CHEAPAG_OPENCODE_URL: fake.url }, logins: { "opencode-go": "k" }, allow: ["--repo", sub] });
+  onTestFinished(server.close);
+
+  const text = await callText(server.client, "delegate", { plan: "my-app/.plan/p.md", steps: "1" });
+  expect(text).toContain("OK");
+  expect(fake.recorded.sessions).toHaveLength(1);
+  expect(existsSync(join(sub, ".cheapag", "jobs"))).toBe(true);
 });

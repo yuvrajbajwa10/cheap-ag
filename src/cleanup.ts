@@ -4,7 +4,7 @@ import { loadConfig, type Config } from "./config.js";
 import { redact } from "./credentials.js";
 import { recoverJobs } from "./jobs.js";
 import { isAlive, removeLink } from "./platform.js";
-import { git, projectRoot } from "./workspace.js";
+import { findSubRepositories, git, projectRoot } from "./workspace.js";
 
 /**
  * Cleanup (spec: Concurrency, platform, cleanup; A20), part of the Workspace module: at server start and on
@@ -120,17 +120,30 @@ export function clean(args: string[]): number {
     out("✗ usage: cheapag clean [--all]   (--all: remove everything not in flight)");
     return 1;
   }
-  let result: Cleaned;
+  let roots: string[];
   try {
-    recoverJobs(process.cwd()); // a crashed server's RUNNING/BLOCKED jobs become CANCELLED, then age normally
-    result = cleanProject(process.cwd(), args[0] === "--all");
-  } catch (err) {
-    out(`✗ ${(err as Error).message}`);
-    return 1;
+    roots = [projectRoot(process.cwd())];
+  } catch {
+    roots = findSubRepositories(process.cwd());
+    if (!roots.length) {
+      out(`✗ ${process.cwd()} is not inside a git repository, and no git repositories were found in subfolders`);
+      return 1;
+    }
   }
-  out(`✓ removed ${result.removed.length}, kept ${result.kept.length}`);
-  for (const line of result.removed) out(`  removed ${line}`);
-  for (const line of result.kept) out(`  kept ${line}`);
+  for (const root of roots) {
+    if (roots.length > 1) out(`\nrepo: ${root}`);
+    let result: Cleaned;
+    try {
+      recoverJobs(root); // a crashed server's RUNNING/BLOCKED jobs become CANCELLED, then age normally
+      result = cleanProject(root, args[0] === "--all");
+    } catch (err) {
+      out(`✗ ${(err as Error).message}`);
+      continue;
+    }
+    out(`✓ removed ${result.removed.length}, kept ${result.kept.length}`);
+    for (const line of result.removed) out(`  removed ${line}`);
+    for (const line of result.kept) out(`  kept ${line}`);
+  }
   return 0;
 }
 

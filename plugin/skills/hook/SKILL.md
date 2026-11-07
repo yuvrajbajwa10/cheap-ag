@@ -1,7 +1,7 @@
 ---
 name: hook
-description: Turn Cheap Agent's edit guard on or off for this repo - when on, Claude's large edits (or a 3rd edit to one file in a turn) are denied and redirected to delegate.
-argument-hint: "[on | off]"
+description: Turn Cheap Agent's edit guard on or off for this repo - when on, Claude's large edits (or a 3rd edit to one file in a turn) are denied and redirected to delegate. From a non-git folder, `on` needs --repo <path> (otherwise it lists the repos found and changes nothing); `off` and the bare status act on all sub-repos.
+argument-hint: "[on | off] [--repo <path>]"
 disable-model-invocation: true
 allowed-tools: Bash(npx -y cheap-agent@1.3.2 hook) Bash(npx -y cheap-agent@1.3.2 hook *)
 ---

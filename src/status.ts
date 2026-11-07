@@ -8,7 +8,7 @@ import { blockedFor, records } from "./jobs.js";
 import { isAlive } from "./platform.js";
 import { renderJob } from "./report.js";
 import { spendWindows } from "./routing.js";
-import { projectRoot } from "./workspace.js";
+import { findSubRepositories, projectRoot } from "./workspace.js";
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
 const RECENT = 5;
@@ -26,13 +26,15 @@ export function status(args: string[]): number {
   const provider = detectProvider()?.provider;
   out(`cheapag ${version} provider=${provider ? `${provider} preset=${presetHere(provider)}` : `none (run ${LOGIN_COMMAND})`}`);
 
-  let root: string | undefined;
+  let roots: string[] = [];
   try {
-    root = projectRoot(process.cwd());
+    roots = [projectRoot(process.cwd())];
   } catch {
-    out("repo: not a git repository (no jobs or consent here)");
+    roots = findSubRepositories(process.cwd());
+    if (!roots.length) out("repo: not a git repository (no jobs or consent here)");
   }
-  if (root) {
+  for (const root of roots) {
+    if (roots.length > 1) out(`\nrepo: ${root}`);
     const consent = readConsent(root);
     out(`consent: ${!consent ? "not given; run /cheapag:allow"
       : consent.provider !== provider ? `given for ${providerLabel(consent.provider)}, not the current provider; run /cheapag:allow`

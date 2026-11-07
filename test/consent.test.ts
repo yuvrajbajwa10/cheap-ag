@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { expect, onTestFinished, test } from "vitest";
 import { startFakeOpencode } from "./fake-opencode.js";
@@ -183,4 +184,77 @@ test("cheapag allow adds .cheapag/ to .git/info/exclude once, not again on a sec
   expect(allowRepo(repo.dir, env)).toContain(".cheapag/ added to .git/info/exclude");
   allowRepo(repo.dir, env);
   expect(readFileSync(exclude, "utf8").split("\n").filter((l) => l === ".cheapag/")).toHaveLength(1);
+});
+
+test("cheapag allow in a non-git directory lists subfolder repositories and writes nothing; --repo allows exactly one", () => {
+  const parent = mkdtempSync(join(tmpdir(), "parent-workspace-"));
+  onTestFinished(() => rmSync(parent, { recursive: true, force: true }));
+  const repo1 = tempRepo();
+  onTestFinished(repo1.cleanup);
+  const repo2 = tempRepo();
+  onTestFinished(repo2.cleanup);
+
+  const sub1 = join(parent, "project-a");
+  const sub2 = join(parent, "project-b");
+  execFileSync("git", ["clone", repo1.dir, sub1], { stdio: "ignore" });
+  execFileSync("git", ["clone", repo2.dir, sub2], { stdio: "ignore" });
+
+  const { env } = hermeticHome({ "opencode-go": "k" });
+  let listed = "";
+  try {
+    allowRepo(parent, env);
+    throw new Error("allow succeeded");
+  } catch (err) {
+    listed = (err as { stdout: Buffer }).stdout.toString();
+  }
+  expect(listed).toContain("Found 2 in subfolders; nothing was allowed");
+  expect(listed).toContain("project-a");
+  expect(listed).toContain("project-b");
+  expect(existsSync(join(sub1, ".cheapag", "consent.json"))).toBe(false);
+  expect(existsSync(join(sub2, ".cheapag", "consent.json"))).toBe(false);
+
+  const output = allowRepo(parent, env, ["--repo", sub1]);
+  expect(output).toContain("project-a");
+  expect(existsSync(join(sub1, ".cheapag", "consent.json"))).toBe(true);
+  expect(existsSync(join(sub2, ".cheapag", "consent.json"))).toBe(false);
+});
+
+test("cheapag allow reports a git failure that is not 'not a repository' with its real message", () => {
+  const repo = tempRepo();
+  onTestFinished(repo.cleanup);
+  const { env } = hermeticHome({ "opencode-go": "k" });
+  // a directory owned by someone else makes git refuse with 'dubious ownership'; simulate any non-NotGitRepo failure
+  // with git missing from PATH
+  let out = "";
+  try {
+    allowRepo(repo.dir, { ...env, PATH: "" });
+    throw new Error("allow succeeded");
+  } catch (err) {
+    out = (err as { stdout?: Buffer }).stdout?.toString() ?? "";
+  }
+  expect(out).toContain("cannot run git");
+  expect(out).not.toContain("is not inside a git repository");
+  expect(existsSync(join(repo.dir, ".cheapag", "consent.json"))).toBe(false);
+});
+
+test("cheapag hook on in a non-git directory lists subfolder repositories and writes nothing", () => {
+  const parent = mkdtempSync(join(tmpdir(), "parent-workspace-"));
+  onTestFinished(() => rmSync(parent, { recursive: true, force: true }));
+  const repo1 = tempRepo();
+  onTestFinished(repo1.cleanup);
+  const sub = join(parent, "project-a");
+  execFileSync("git", ["clone", repo1.dir, sub], { stdio: "ignore" });
+  const { env } = hermeticHome();
+  let out = "";
+  try {
+    execFileSync(process.execPath, [serverEntry, "hook", "on"], { cwd: parent, env, stdio: "pipe" });
+    throw new Error("hook on succeeded");
+  } catch (err) {
+    out = (err as { stdout?: Buffer }).stdout?.toString() ?? "";
+  }
+  expect(out).toContain("nothing was changed");
+  expect(out).toContain("project-a");
+  expect(existsSync(join(sub, ".cheapag", "hook.json"))).toBe(false);
+  execFileSync(process.execPath, [serverEntry, "hook", "on", "--repo", sub], { cwd: parent, env, stdio: "pipe" });
+  expect(existsSync(join(sub, ".cheapag", "hook.json"))).toBe(true);
 });

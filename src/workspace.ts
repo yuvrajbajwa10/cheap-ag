@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { copyFileSync, cpSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { isAlive, link, normalisePath, removeLink } from "./platform.js";
 
@@ -15,13 +15,90 @@ export function git(cwd: string, args: string[], env?: Record<string, string>) {
   return execFileSync("git", [...GIT_ARGS, ...args], { cwd, stdio: "pipe", env: env && { ...process.env, ...env }, maxBuffer: 256 * 1024 * 1024 }).toString();
 }
 
-/** The repository root containing `cwd`; throws when it is not a git repository. */
+/** Thrown by `projectRoot` only when git says the directory is not in a repository; other failures keep their own error. */
+export class NotGitRepoError extends Error {
+  constructor(cwd: string) {
+    super(`${cwd} is not inside a git repository`);
+    this.name = "NotGitRepoError";
+  }
+}
+
+/** The repository root containing `cwd`; throws NotGitRepoError when it is not a git repository, and the real error otherwise. */
 export function projectRoot(cwd: string) {
   try {
     // resolved: git prints forward slashes on Windows (C:/x/y); path.* gives the platform's own separators
-    return resolve(git(cwd, ["rev-parse", "--show-toplevel"]).trim());
+    return resolve(git(cwd, ["rev-parse", "--show-toplevel"], { LC_ALL: "C", LANG: "C" }).trim());
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException & { stderr?: Buffer };
+    const stderr = e.stderr?.toString().trim() ?? "";
+    if (/not a git repository/i.test(stderr)) throw new NotGitRepoError(cwd);
+    if (e.code === "ENOENT") throw new Error(`cannot run git in ${cwd}: ${e.message}`);
+    throw new Error(`git failed in ${cwd}: ${stderr || e.message}`);
+  }
+}
+
+const IGNORED_SUBDIRS = new Set([
+  "node_modules", ".cheapag", ".git", "dist", "build", ".next", "target", "vendor", ".cache", ".turbo", ".idea", ".vscode",
+]);
+
+/**
+ * Finds all git repositories in subfolders of `dir` up to `maxDepth`. Symlinks are never followed (a link could point
+ * at a repository outside the workspace), and a repo needs a `.git` inside a real directory.
+ */
+export function findSubRepositories(dir: string, maxDepth = 2, currentDepth = 1): string[] {
+  const repos: string[] = [];
+  try {
+    const entries = readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isSymbolicLink() || !entry.isDirectory()) continue;
+      if (IGNORED_SUBDIRS.has(entry.name) || entry.name.startsWith(".")) continue;
+      const fullPath = join(dir, entry.name);
+      try {
+        const dotGit = lstatSync(join(fullPath, ".git"), { throwIfNoEntry: false });
+        if (dotGit && !dotGit.isSymbolicLink()) {
+          repos.push(resolve(fullPath));
+          continue; // do not recurse inside a found repository
+        }
+      } catch {}
+      if (currentDepth < maxDepth) {
+        repos.push(...findSubRepositories(fullPath, maxDepth, currentDepth + 1));
+      }
+    }
+  } catch {}
+  return repos.sort();
+}
+
+/** Finds the containing git repository for a file or directory path by walking up the directory tree. */
+export function findRepoForPath(target: string, baseDir?: string): string | undefined {
+  let curr = resolve(baseDir ? resolve(baseDir, target) : target);
+  try {
+    if (!existsSync(curr) || !statSync(curr).isDirectory()) {
+      curr = dirname(curr);
+    }
   } catch {
-    throw new Error(`${cwd} is not inside a git repository`);
+    curr = dirname(curr);
+  }
+  while (true) {
+    if (existsSync(join(curr, ".git"))) {
+      try {
+        return projectRoot(curr);
+      } catch {
+        return resolve(curr);
+      }
+    }
+    const parent = dirname(curr);
+    if (parent === curr) break;
+    curr = parent;
+  }
+  return undefined;
+}
+
+/** The repository roots for `cwd`: returns `[projectRoot(cwd)]` if inside a git repo, or all git repos found in subfolders. */
+export function resolveProjectRoots(cwd: string): string[] {
+  try {
+    return [projectRoot(cwd)];
+  } catch {
+    return findSubRepositories(cwd);
   }
 }
 
